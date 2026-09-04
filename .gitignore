@@ -1,0 +1,32 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+build/
+dist/
+*.spec.bak
+
+# 사용자 데이터
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-*
+logs/
+backups/
+
+# 번들 모델 (CI가 받아온다)
+resources/models/**/*.onnx
+resources/models/**/tokenizer.json
+
+# 폰트 — 라이선스 확인 후 개별 허용할 것
+resources/fonts/*
+
+.env
+.env.*
+
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

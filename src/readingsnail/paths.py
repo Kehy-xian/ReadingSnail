@@ -65,3 +65,20 @@ def legacy_data_dir(**kw) -> Path:
 
 def legacy_db_path(**kw) -> Path:
     return legacy_data_dir(**kw) / LEGACY_DB_FILENAME
+
+
+def resource_root(*, environ: dict[str, str] | None = None) -> Path:
+    """번들 리소스(스프라이트·모델·폰트) 뿌리.
+
+    PyInstaller onedir 로 묶으면 실행 파일 옆에 놓인다. 개발 중에는 저장소 뿌리다.
+    """
+    env = dict(os.environ if environ is None else environ)
+    override = env.get('READINGSNAIL_RESOURCE_ROOT')
+    if override:
+        return Path(override).expanduser()
+    bundled = getattr(sys, '_MEIPASS', None)
+    if bundled:
+        return Path(bundled)
+    if getattr(sys, 'frozen', False):
+        return Path(sys.executable).resolve().parent
+    return Path(__file__).resolve().parents[2]

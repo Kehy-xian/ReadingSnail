@@ -308,15 +308,55 @@ class Journal:
                 raise KeyError(entry_id)
 
     # ── 임베딩 ────────────────────────────────────────
-    def pending_embeddings(self, *, limit: int = 32) -> list[tuple[str, str]]:
-        """아직 인코딩되지 않은 기록. (entry_id, body) 목록."""
+    def pending_embeddings(self, *, model: str | None = None,
+                           limit: int = 32) -> list[tuple[str, str]]:
+        """아직 인코딩되지 않은 기록. (entry_id, body) 목록.
+
+        model 을 넘기면 **다른 모델로 만든 벡터도 대상에 넣는다.** 모델을 바꾸면
+        (예: INT8 양자화) 옛 벡터는 새 벡터와 비교할 수 없기 때문이다.
+        비교 불가능한 벡터를 그대로 두면 되살리기가 조용히 엉뚱해진다.
+
+        최신 기록부터 준다. 방금 쓴 글이 가장 먼저 이어지는 게 자연스럽다.
+        """
+        if limit <= 0:
+            return []
+        if model is None:
+            where, args = 'embedding IS NULL', []
+        else:
+            where, args = '(embedding IS NULL OR embed_model IS NOT ?)', [str(model)]
+        args.append(int(limit))
+        with self.db.connect() as con:
+            rows = con.execute(
+                f'SELECT entry_id, body FROM entries WHERE {where} '
+                'ORDER BY created_at DESC, rowid DESC LIMIT ?', args).fetchall()
+            return [(str(r['entry_id']), str(r['body'])) for r in rows]
+
+    def count_pending_embeddings(self, *, model: str | None = None) -> int:
+        if model is None:
+            sql, args = 'SELECT count(*) AS n FROM entries WHERE embedding IS NULL', ()
+        else:
+            sql = ('SELECT count(*) AS n FROM entries '
+                   'WHERE embedding IS NULL OR embed_model IS NOT ?')
+            args = (str(model),)
+        with self.db.connect() as con:
+            return int(con.execute(sql, args).fetchone()['n'])
+
+    def embedded_entries(self, *, model: str,
+                         limit: int = 5000) -> list[tuple[str, bytes]]:
+        """같은 모델로 만든 벡터만. (entry_id, embedding) 목록.
+
+        모델이 다른 벡터를 섞으면 좌표계가 달라 유사도가 무의미해진다.
+        """
         if limit <= 0:
             return []
         with self.db.connect() as con:
             rows = con.execute(
-                'SELECT entry_id, body FROM entries WHERE embedding IS NULL '
-                'ORDER BY created_at DESC, rowid DESC LIMIT ?', (int(limit),)).fetchall()
-            return [(str(r['entry_id']), str(r['body'])) for r in rows]
+                'SELECT entry_id, embedding FROM entries '
+                'WHERE embedding IS NOT NULL AND embed_model IS ? '
+                'ORDER BY created_at DESC, rowid DESC LIMIT ?',
+                (str(model), int(limit)),
+            ).fetchall()
+            return [(str(r['entry_id']), bytes(r['embedding'])) for r in rows]
 
     def set_embedding(self, entry_id: str, vector: bytes, model: str) -> None:
         """저장 시점에 한 번만 계산된 벡터를 붙인다."""

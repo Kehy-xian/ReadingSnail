@@ -10,7 +10,7 @@
 | 전작 경로 | 용도 |
 |---|---|
 | `storage/sqlite_store.py`, `journal.py`, `draft.py`, `settings.py` | 책 1:N 기록, 임시저장 |
-| `services/memory.py` | 기억 되살리기 = 기록 뱉기 본체 |
+| ~~`services/memory.py`~~ | **완료.** `services/recall.py` — 무작위 대신 임베딩 최근접으로 |
 | `services/data_transfer.py`, `version_backup.py` | 백업·이전·버전 전환 |
 | `pet_sprite.py`, `pet_art.py`, `art_override_store.py`, `sprite_validation.py` | 스프라이트 파이프라인 |
 | `tools/validate_sprite_pack.py`, `install_sprite_override.py` | 원화 교체 도구 |
@@ -23,9 +23,9 @@
 | 전작 | 변경 |
 |---|---|
 | ~~`pet_window.py` + `pet_window_v2`~`v11`~~ | **완료.** 11단계 3,469줄 → `pet/window.py` 단일 클래스 |
-| `services/dialogue.py` | 진화 노선 기반 → 4갈래 가중치 (`services/dialogue.py` 참조) |
+| ~~`services/dialogue.py`~~ | **완료.** 4갈래 가중치 + `services/speaker.py` 로 저장소 연결 |
 | `services/catalog.py` + `cloudflare/src/index.ts` | 알라딘 → 국립중앙도서관. Worker의 `searchBooks()` 하나만 교체하면 된다 |
-| `ci/e5_targeted_validation.py`의 `E5` 클래스 | `src/readingsnail/nlp/encoder.py`로 승격. **인코더만** 쓴다 |
+| ~~`ci/e5_targeted_validation.py`의 `E5`~~ | **완료.** `nlp/encoder.py` — 인코더만. 성향 분류는 안 가져옴 |
 
 ## 버린다
 

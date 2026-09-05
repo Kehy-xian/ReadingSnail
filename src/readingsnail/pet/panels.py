@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import tkinter as tk
 from tkinter import messagebox
+from typing import Callable
 
 from ..storage.drafts import Drafts
 from ..storage.journal import Journal
@@ -21,11 +22,13 @@ class WritePanel:
     """기록 한 건을 남긴다. 닫으면 쓰던 글이 초안으로 남는다."""
 
     def __init__(self, parent: tk.Misc, journal: Journal, drafts: Drafts,
-                 *, book_id: str | None = None, owner: object | None = None):
+                 *, book_id: str | None = None, owner: object | None = None,
+                 on_saved: Callable[[], None] | None = None):
         self.journal = journal
         self.drafts = drafts
         self.book_id = book_id
         self.draft_key = Drafts.key_for_book(book_id)
+        self.on_saved = on_saved
         # 달팽이 창이 닫힐 때 쓰던 글을 초안으로 남기기 위해 등록한다.
         # 등록하지 않으면 root.destroy() 가 이 창을 그냥 없애 글이 사라진다.
         self.owner = owner if hasattr(owner, 'register_closer') else None
@@ -84,6 +87,9 @@ class WritePanel:
         self.drafts.clear(self.draft_key)
         self._detach()
         self.top.destroy()
+        # 저장이 끝난 뒤에 알린다. 임베딩 작업자를 깨워 되살리기가 이어진다.
+        if self.on_saved is not None:
+            self.on_saved()
 
     def _save_draft(self) -> None:
         """쓰던 글을 초안으로. 창이 이미 사라졌으면 조용히 넘어간다."""

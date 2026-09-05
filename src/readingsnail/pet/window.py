@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import sys
 import tkinter as tk
+from dataclasses import replace
 from typing import Callable
 
 from ..theme import PALETTE, TRANSPARENT_KEY, font
@@ -29,6 +30,7 @@ from .behavior import PetMotion, RoamPlanner, WorkArea
 BASE_SIZE = 190          # 원화 캔버스 크기. 스프라이트 규격과 같다.
 ROAM_INTERVAL_MS = 70    # 이동 틱
 DRAW_INTERVAL_MS = 120   # 그리기 틱
+BUBBLE_HOLD_MS = 9000    # 말풍선이 떠 있는 시간
 
 
 def enable_dpi_awareness() -> None:
@@ -117,6 +119,10 @@ class PetWindow:
         self._paused = False        # 메뉴·패널이 열려 있으면 멈춘다
         self._closed = False
         self._bubble: str | None = None
+        self._bubble_after: str | None = None
+        # 예약해 둔 after 들. 닫을 때 취소하지 않으면 Tk 가 사라진 뒤에도 남아
+        # 'invalid command name ...' 이 뜨고, 창이 둘 이상이면 엉뚱한 곳에서 터진다.
+        self._after_ids: set[str] = set()
         # 창을 닫기 전에 불러줄 것들. 패널이 쓰던 글을 초안으로 남길 기회다.
         # root.destroy() 는 자식 Toplevel 을 그냥 없애버리므로 이게 없으면 글이 사라진다.
         self._closers: list[Callable[[], None]] = []
@@ -200,10 +206,46 @@ class PetWindow:
             handler()
 
     # ── 말풍선 ────────────────────────────────────────
-    def say(self, text: str | None) -> None:
-        """달팽이가 말한다. 발화 내용은 services/dialogue.py 가 정한다."""
+    def say(self, text: str | None, *, hold_ms: int = BUBBLE_HOLD_MS) -> None:
+        """달팽이가 말한다. 발화 내용은 services/speaker.py 가 정한다.
+
+        hold_ms 뒤에 저절로 사라진다. 말풍선이 계속 떠 있으면 바탕화면을 가린다.
+        """
+        if self._closed:
+            return
         self._bubble = text or None
+        if self._bubble_after is not None:
+            self._cancel(self._bubble_after)
+            self._bubble_after = None
+        if self._bubble and hold_ms > 0:
+            self._bubble_after = self._after(hold_ms, lambda: self.say(None))
+        if self._bubble and self.motion.state in ('idle', 'walk'):
+            # 말할 때는 멈춰 선다. 걸어가면서 말풍선이 따라다니면 읽기 어렵다.
+            self.motion = replace(self.motion, state='talk', target_x=None,
+                                  target_y=None, hold_ticks=max(8, hold_ms // 400))
         self.draw()
+
+    def call_later(self, delay_ms: int, fn: Callable[[], None]) -> None:
+        """UI 스레드에서 나중에 부른다. 배경 스레드가 화면을 만지면 안 되므로
+        모든 발화는 이 문을 지난다."""
+        self._after(max(0, int(delay_ms)), fn)
+
+    def _after(self, delay_ms: int, fn: Callable[[], None]) -> str | None:
+        """취소할 수 있게 id 를 들고 있는 after."""
+        if self._closed:
+            return None
+
+        def wrapped() -> None:
+            self._after_ids.discard(handle)
+            if not self._closed:
+                fn()
+
+        try:
+            handle = self.root.after(delay_ms, wrapped)
+        except tk.TclError:
+            return None
+        self._after_ids.add(handle)
+        return handle
 
     # ── 틱 ────────────────────────────────────────────
     def step(self) -> None:
@@ -217,13 +259,13 @@ class PetWindow:
         if self._closed:
             return
         self.step()
-        self.root.after(ROAM_INTERVAL_MS, self._roam_loop)
+        self._after(ROAM_INTERVAL_MS, self._roam_loop)
 
     def _draw_loop(self) -> None:
         if self._closed:
             return
         self.draw()
-        self.root.after(DRAW_INTERVAL_MS, self._draw_loop)
+        self._after(DRAW_INTERVAL_MS, self._draw_loop)
 
     # ── 그리기 ────────────────────────────────────────
     def draw(self) -> None:
@@ -334,10 +376,22 @@ class PetWindow:
         if closer in self._closers:
             self._closers.remove(closer)
 
+    def _cancel(self, handle: str | None) -> None:
+        if handle is None:
+            return
+        self._after_ids.discard(handle)
+        try:
+            self.root.after_cancel(handle)
+        except tk.TclError:
+            pass
+
     def close(self) -> None:
         if self._closed:
             return
         self._closed = True
+        for handle in list(self._after_ids):
+            self._cancel(handle)
+        self._after_ids.clear()
         # 패널 먼저. 하나가 터져도 나머지는 저장 기회를 얻어야 한다.
         for closer in list(self._closers):
             try:

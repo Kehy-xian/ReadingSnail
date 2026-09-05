@@ -44,9 +44,10 @@ onnxruntime (임베딩 인코딩 전용) / PyInstaller onedir / Inno Setup
 `docs/SPEC.md`가 확정 명세, `docs/PORTING_MAP.md`가 전작에서 가져올 것과
 버릴 것의 목록이다. 작업 전에 둘 다 읽을 것.
 
-**1·2단계 완료.** `python -m readingsnail` 로 실제로 뜬다. 3단계(임베딩·발화)가 다음이다.
+**1~3단계 완료.** `python -m readingsnail` 로 뜨고, 기록을 남기면 잠시 뒤 달팽이가
+비슷한 옛 기록을 꺼낸다. 4단계(국중 서지 API, INT8 양자화)가 다음이다.
 
-동작이 검증된 것 — `python -m unittest discover -s tests` (107건 통과)
+동작이 검증된 것 — `python -m unittest discover -s tests` (158건 통과)
 GUI 테스트는 tkinter·디스플레이가 없으면 자동으로 건너뛴다.
 
 | 있는 것 | 파일 |
@@ -60,14 +61,20 @@ GUI 테스트는 tkinter·디스플레이가 없으면 자동으로 건너뛴다
 | 명언 시드 24건 + 멱등 주입기 | `storage/seeds/quotes_ko.json`, `storage/seed.py` |
 | 데이터 폴더 경로 (전작 포함) | `paths.py` |
 | 4갈래 발화 가중치 | `services/dialogue.py` |
+| 발화 엔진 (저장소 연결·반복 방지) | `services/speaker.py` |
+| 의미 검색 되살리기 | `services/recall.py` |
+| 배경 임베딩 작업자 | `services/embedding.py` |
+| 벡터 저장 형식·유사도 (순수 파이썬) | `nlp/vectors.py` |
+| E5 ONNX 인코더 (게으른 적재) | `nlp/encoder.py` |
 | 8방향 이동 (순수 로직) | `pet/behavior.py` |
 | 달팽이 창 (단일 클래스) | `pet/window.py` |
 | 기록·서재 창 (임시) | `pet/panels.py` |
 | 실행 진입점 | `__main__.py` |
 | 폰트·색 상수 | `theme.py` |
 
-비어 있는 것 — `nlp/`(인코더), 의미 검색·발화 서비스, 스프라이트 파이프라인,
-서지 API, 책장 뷰, 빌드 스펙. `docs/PORTING_MAP.md`대로 전작에서 가져와 채운다.
+비어 있는 것 — 스프라이트 파이프라인, 서지 API, 책장 뷰, 주간 요약, 트레이,
+내보내기, 빌드 스펙. **번들 모델(multilingual-e5-small ONNX)도 아직 없다** —
+없어도 앱은 돌고 기록도 쌓인다. 되살리기만 조용히 쉰다. `docs/PORTING_MAP.md`대로 전작에서 가져와 채운다.
 
 `pet/panels.py`는 **일부러 꾸미지 않았다.** 기능(1~4) → 디자인(5~6) 순서이므로
 지금 다듬으면 6단계에서 갈아엎을 화면을 다듬게 된다.
@@ -90,6 +97,19 @@ journal.add_entry('숲으로 간 이유', book_id=book.book_id, kind='quote', pa
 닫는데, 이건 전작의 의도적 설계를 그대로 가져온 것이다 — UI 스레드와 임베딩
 백그라운드 작업이 같은 DB를 보므로 연결을 물고 있으면 안 된다.
 
+## 스레드 규칙
+
+**tkinter 는 인터프리터를 만든 스레드에서만 안전하다.** `root.after` 조차 배경에서
+부르면 안 된다. 전작이 `queue.Queue` + `_poll_results` 를 쓴 이유가 그것이다.
+
+  · 배경에서 만든 말은 `Companion._say_queue` 에 넣고, UI 스레드가 `_pump` 로 꺼낸다.
+  · 무거운 계산(인코딩, 최근접 탐색)은 전부 배경에서 한다.
+    최근접 탐색은 기록 5,000건에 0.3초쯤 걸린다 — UI 스레드에서 하면 그만큼 얼어붙는다.
+  · **배경 스레드를 종료할 때는 합류(join)까지 기다린다.** 안 그러면 마지막 참조를
+    쥔 스레드에서 Tk 객체가 회수되어 인터프리터가
+    `Tcl_AsyncDelete: async handler deleted by the wrong thread` 로 죽는다.
+  · 예약한 `after` 는 `PetWindow._after()` 로 걸고 닫을 때 전부 취소한다.
+
 ## 창을 늘릴 때
 
 **PetWindow 를 상속하지 말 것.** 전작은 pet_window.py 위에 v2~v11 이 한 겹씩
@@ -109,6 +129,10 @@ journal.add_entry('숲으로 간 이유', book_id=book.book_id, kind='quote', pa
    개발을 Windows 밖에서 하면 이 차이를 늘 염두에 둘 것.
 3. **`enable_dpi_awareness()`는 `tk.Tk()`보다 먼저 부른다.** 안 그러면 고DPI
    화면에서 좌표와 화면 크기가 배율만큼 어긋난다.
+5. **모델이 다른 벡터끼리 비교하지 않는다.** `embed_model` 이 다르면 좌표계가 달라
+   유사도가 숫자일 뿐이다. `Journal.embedded_entries(model=...)` 가 걸러내고,
+   `pending_embeddings(model=...)` 가 옛 모델 벡터를 다시 인코딩 대상에 넣는다.
+   INT8 양자화로 갈 때 이게 자동으로 작동한다.
 4. **`theme.font()`는 tkinter 초기화 이후에만 부른다.** `tkfont.families()`가
    Tk 인스턴스를 요구한다. 반환된 Font 객체는 모듈 전역에 캐시되므로 Tk root를
    새로 만들면 캐시(`theme._resolved`)도 비워야 한다.

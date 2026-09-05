@@ -146,10 +146,11 @@ class AppBoot(unittest.TestCase):
 
     def test_기록이_없어도_첫마디가_나온다(self):
         """시드가 없으면 여기서 달팽이가 벙어리가 된다."""
-        from readingsnail.__main__ import _first_words
-        with self.db.connect() as conn:
-            words = _first_words(self.journal, conn)
-        self.assertTrue(words)
+        from readingsnail.services.speaker import Speaker
+        with self.db.write() as conn:
+            spoken = Speaker(self.journal).speak(conn)
+        self.assertIsNotNone(spoken)
+        self.assertTrue(spoken.utterance.text)
 
     def test_기록_창에서_저장하면_DB에_들어간다(self):
         from readingsnail.pet.panels import WritePanel
@@ -292,3 +293,114 @@ class ClosingWithOpenPanel(unittest.TestCase):
         self.pet.register_closer(lambda: broken.append('정리됨'))
         self.pet.close()
         self.assertEqual(broken, ['정리됨'])
+
+
+@unittest.skipUnless(GUI, REASON)
+class ThreadBoundary(unittest.TestCase):
+    """tkinter 는 인터프리터를 만든 스레드에서만 안전하다.
+
+    root.after 조차 배경에서 부르면 안 된다. 전작이 queue 를 쓴 이유가 그것이다.
+    배경에서 만든 말은 큐를 거쳐 UI 스레드가 꺼내야 한다.
+    """
+
+    def setUp(self) -> None:
+        import os
+        from tempfile import TemporaryDirectory
+        self._tmp = TemporaryDirectory()
+        os.environ['READINGSNAIL_DATA_DIR'] = self._tmp.name
+
+        from readingsnail.nlp import vectors
+        from readingsnail.paths import default_db_path
+        from readingsnail.pet.window import PetWindow
+        from readingsnail.storage.db import open_database
+        from readingsnail.storage.journal import Journal
+
+        class Fake:
+            MODEL_ID = 'fake-v1'
+
+            def encode(self, texts, *, kind='passage'):
+                rows = []
+                for text in texts:
+                    buckets = [0.0] * 64
+                    for i in range(max(0, len(text) - 2)):
+                        buckets[hash(text[i:i + 3]) % 64] += 1.0
+                    rows.append(vectors.normalize(buckets))
+                return rows
+
+        self.db = open_database(default_db_path())
+        self.journal = Journal(self.db)
+        self.pet = PetWindow(start_at=(120, 120))
+        self.encoder = Fake()
+
+    def tearDown(self) -> None:
+        import os
+        self.pet.close()
+        self.db.close()
+        os.environ.pop('READINGSNAIL_DATA_DIR', None)
+        self._tmp.cleanup()
+
+    def test_배경_스레드가_Tk를_직접_만지지_않는다(self):
+        import threading
+        import time
+        from readingsnail.__main__ import Companion
+        from readingsnail.services import dialogue
+
+        ui_thread = threading.get_ident()
+        offenders: list[str] = []
+        original = self.pet.root.after
+
+        def guarded(*args, **kwargs):
+            if threading.get_ident() != ui_thread:
+                offenders.append(threading.current_thread().name)
+            return original(*args, **kwargs)
+
+        self.pet.root.after = guarded
+        saved_delay = dialogue.ECHO_DELAY_SEC
+        dialogue.ECHO_DELAY_SEC = (0, 0)          # 되살리기를 즉시 일으킨다
+        companion = Companion(self.pet, self.db, self.journal, self.encoder)
+        try:
+            companion.start()
+            for i in range(20):
+                self.journal.add_entry(f'숲으로 간 이유를 생각했다 {i}')
+            companion.note_saved()
+            deadline = time.time() + 4
+            while time.time() < deadline and companion.worker.pending:
+                self.pet.root.update()
+                time.sleep(0.01)
+            for _ in range(60):
+                self.pet.root.update()
+                time.sleep(0.01)
+        finally:
+            companion.stop()
+            dialogue.ECHO_DELAY_SEC = saved_delay
+            self.pet.root.after = original
+
+        self.assertEqual(offenders, [], f'배경 스레드가 root.after 를 불렀다: {offenders}')
+        self.assertEqual(companion.worker.failed, 0)
+        self.assertEqual(companion.worker.encoded, 20)
+
+    def test_종료하면_예약된_되살리기가_취소된다(self):
+        import time
+        from readingsnail.__main__ import Companion
+        from readingsnail.services import dialogue
+
+        saved_delay = dialogue.ECHO_DELAY_SEC
+        dialogue.ECHO_DELAY_SEC = (30, 30)        # 아직 안 터진 타이머를 남긴다
+        companion = Companion(self.pet, self.db, self.journal, self.encoder)
+        try:
+            companion.start()
+            self.journal.add_entry('되살릴 기록')
+            companion.note_saved()
+            deadline = time.time() + 3
+            while time.time() < deadline and companion.worker.pending:
+                self.pet.root.update()
+                time.sleep(0.01)
+        finally:
+            companion.stop()
+            dialogue.ECHO_DELAY_SEC = saved_delay
+        self.assertFalse([t for t in companion._timers if t.is_alive()])
+
+    def test_창이_닫힌_뒤에_말해도_터지지_않는다(self):
+        self.pet.close()
+        self.pet.say('닫힌 뒤의 말')          # TclError 가 나면 안 된다
+        self.assertIsNone(self.pet._bubble)

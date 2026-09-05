@@ -20,11 +20,13 @@ import tkinter as tk
 from tkinter import messagebox, ttk
 from typing import Callable
 
-from ..theme import PAD_L, PAD_M, PAD_S, PALETTE
+from ..theme import PAD_L, PAD_M, PAD_S, PALETTE, font
 from .styling import apply as apply_style
 from .styling import text_defaults
 
 BOOK_NONE = '(책 없이)'
+# 책장에 한 번에 그릴 최대 권수. 넘으면 요약에 사실대로 적는다.
+MAX_SHELF_BOOKS = 2000
 STATUS_LABELS = (('읽는 중', 'reading'), ('읽고 싶은', 'wishlist'),
                  ('다 읽음', 'completed'), ('잠시 멈춤', 'paused'))
 STATUS_KO = {value: label for label, value in STATUS_LABELS}
@@ -511,3 +513,202 @@ def _search_worker(source, text: str, found: queue.Queue) -> None:
         found.put((text, search_books(source, text, limit=20)))
     except Exception:
         found.put((text, []))
+
+
+class ShelfPanel(_Panel):
+    """다 읽은 책이 꽂히는 책장. 이 앱의 유일한 보상 화면이다.
+
+    책등은 표지에서 뽑은 색으로 물들이고(`spine_tint`), 기울인 책과 눕힌 책을
+    섞어 정돈감을 깬다. 자세는 book_id 로 정해져 있어 열 때마다 춤추지 않는다.
+    """
+
+    title = '책장'
+    size = '620x560'
+
+    def __init__(self, parent: tk.Misc, journal, *, owner: object | None = None,
+                 on_open_book: Callable[[str], None] | None = None,
+                 status: str = 'completed'):
+        super().__init__(parent, owner=owner)
+        self.journal = journal
+        self.on_open_book = on_open_book
+        self.status = status
+        self.slots: list = []
+        self._refresh_after: str | None = None
+
+        outer = ttk.Frame(self.top, padding=PAD_M)
+        outer.pack(fill='both', expand=True)
+
+        bar = ttk.Frame(outer)
+        bar.pack(fill='x', pady=(0, PAD_S))
+        ttk.Label(bar, text='책장', style='Heading.TLabel').pack(side='left')
+        self.summary = ttk.Label(bar, style='Muted.TLabel')
+        self.summary.pack(side='right')
+
+        holder = ttk.Frame(outer)
+        holder.pack(fill='both', expand=True)
+        self.canvas = tk.Canvas(holder, bg=PALETTE['paper'], highlightthickness=1,
+                                highlightbackground=PALETTE['border'], bd=0)
+        self.canvas.pack(side='left', fill='both', expand=True)
+        scroll = ttk.Scrollbar(holder, orient='vertical', command=self.canvas.yview)
+        scroll.pack(side='right', fill='y')
+        self.canvas.configure(yscrollcommand=scroll.set)
+        self.canvas.bind('<Button-1>', self._click)
+        # 창 크기를 끌면 <Configure> 가 초당 수십 번 온다. 그때마다 500권을
+        # 다시 배치하면(79ms) 창이 끈적해진다. 잠깐 모았다 한 번만 그린다.
+        self.canvas.bind('<Configure>', self._schedule_refresh)
+
+        self.hint = ttk.Label(outer, style='Muted.TLabel',
+                              text='책을 누르면 그 책의 기록이 열립니다.')
+        self.hint.pack(fill='x', pady=(PAD_S, 0))
+        self.refresh()
+
+    def _schedule_refresh(self, _event: tk.Event | None = None) -> None:
+        if self._refresh_after is not None:
+            try:
+                self.top.after_cancel(self._refresh_after)
+            except tk.TclError:
+                pass
+        try:
+            self._refresh_after = self.top.after(80, self._do_refresh)
+        except tk.TclError:
+            self._refresh_after = None
+
+    def _do_refresh(self) -> None:
+        self._refresh_after = None
+        if not self._disposed:
+            self.refresh()
+
+    def refresh(self) -> None:
+        from . import shelf as layout_mod
+
+        books = self.journal.list_books(status=self.status, limit=MAX_SHELF_BOOKS)
+        total = self.journal.count_books(status=self.status)
+        width = max(240, self.canvas.winfo_width() or 560)
+        shelves, self.slots = layout_mod.layout(books, width=width)
+        height = layout_mod.canvas_height(shelves)
+        self.canvas.delete('all')
+        self.canvas.configure(scrollregion=(0, 0, width, height))
+
+        for board in shelves:
+            self.canvas.create_rectangle(
+                board.left - 6, board.top, board.right + 6,
+                board.top + layout_mod.SHELF_THICKNESS,
+                fill=PALETTE['shelf_wood'], outline=PALETTE['ink'], width=1)
+
+        for slot in self.slots:
+            self._draw_spine(slot)
+
+        if not self.slots:
+            self.canvas.create_text(
+                width // 2, 90, text='아직 다 읽은 책이 없습니다.',
+                fill=PALETTE['ink_soft'], font=font('body', master=self.top))
+        # **몇 권인지는 사실대로 말한다.** 잘렸으면 잘렸다고 알린다 —
+        # 조용히 절반만 보여주면 사용자는 책이 사라진 줄 안다.
+        if total > len(self.slots):
+            self.summary.config(text=f'{total}권 중 {len(self.slots)}권 표시')
+        else:
+            self.summary.config(text=f'{total}권')
+
+    def _draw_spine(self, slot) -> None:
+        fill = slot.tint or PALETTE['paper_deep']
+        # 기울임은 사각형 대신 다각형으로 낸다. Canvas 사각형은 회전하지 않는다.
+        offset = 0 if slot.lying else int(slot.height * slot.tilt / 90)
+        points = [
+            slot.x + offset, slot.y,
+            slot.x + slot.width + offset, slot.y,
+            slot.x + slot.width, slot.bottom,
+            slot.x, slot.bottom,
+        ]
+        self.canvas.create_polygon(points, fill=fill, outline=PALETTE['ink'],
+                                   width=1, tags=('spine', slot.book_id))
+        label = slot.title if len(slot.title) <= 12 else slot.title[:11] + '…'
+        self.canvas.create_text(
+            slot.x + slot.width // 2 + offset // 2, slot.y + slot.height // 2,
+            text=label, angle=0 if slot.lying else 90,
+            fill=_readable_on(fill), font=font('caption', master=self.top),
+            width=slot.height - 12 if not slot.lying else slot.width - 12,
+            tags=('spine', slot.book_id))
+
+    def _click(self, event: tk.Event) -> None:
+        from . import shelf as layout_mod
+
+        x = int(self.canvas.canvasx(event.x))
+        y = int(self.canvas.canvasy(event.y))
+        slot = layout_mod.slot_at(self.slots, x, y)
+        if slot is not None and self.on_open_book is not None:
+            self.on_open_book(slot.book_id)
+
+    def _cleanup(self) -> None:
+        if self._refresh_after is not None:
+            try:
+                self.top.after_cancel(self._refresh_after)
+            except tk.TclError:
+                pass
+            self._refresh_after = None
+        self.slots = []
+
+
+class PropsPanel(_Panel):
+    """달팽이에게 얹을 소품을 고른다.
+
+    **해금 개념이 없다**(CLAUDE.md). 폴더에 있으면 고를 수 있다.
+    무엇을 읽었는지와 무관하다 — 순수한 취향이다.
+    """
+
+    title = '소품'
+    size = '360x420'
+
+    def __init__(self, parent: tk.Misc, sprites, settings, *,
+                 owner: object | None = None, setting_key: str = 'pet.props',
+                 on_change: Callable[[tuple[str, ...]], None] | None = None):
+        super().__init__(parent, owner=owner)
+        self.sprites = sprites
+        self.settings = settings
+        self.setting_key = setting_key
+        self.on_change = on_change
+        self.vars: dict[str, tk.BooleanVar] = {}
+
+        outer = ttk.Frame(self.top, padding=PAD_M)
+        outer.pack(fill='both', expand=True)
+        ttk.Label(outer, text='소품', style='Heading.TLabel').pack(anchor='w')
+        ttk.Label(outer, style='Muted.TLabel', wraplength=300, justify='left',
+                  text='해금은 없습니다. 폴더에 있으면 고를 수 있습니다.').pack(
+                      anchor='w', pady=(0, PAD_M))
+
+        available = sprites.available_props() if sprites is not None else ()
+        chosen = {p for p in (settings.get(setting_key, '') or '').split(',') if p}
+        if not available:
+            ttk.Label(outer, style='Muted.TLabel', wraplength=300, justify='left',
+                      text='resources/props/ 에 prop_<이름>.png 를 넣으면 '
+                           '여기에 나타납니다.').pack(anchor='w')
+        for name in available:
+            var = tk.BooleanVar(value=name in chosen)
+            self.vars[name] = var
+            ttk.Checkbutton(outer, text=name, variable=var,
+                            command=self._apply).pack(anchor='w', pady=1)
+
+        ttk.Button(outer, text='닫기', command=self.close).pack(side='bottom',
+                                                              anchor='e')
+
+    def selected(self) -> tuple[str, ...]:
+        return tuple(name for name, var in self.vars.items() if var.get())
+
+    def _apply(self) -> None:
+        picked = self.selected()
+        self.settings.set(self.setting_key, ','.join(picked))
+        if self.sprites is not None:
+            self.sprites.set_props(picked)
+        if self.on_change is not None:
+            self.on_change(picked)
+
+    def _cleanup(self) -> None:
+        self.vars = {}
+
+
+def _readable_on(background: str) -> str:
+    """그 바탕 위에서 읽히는 글자색을 고른다. 책등 색은 표지마다 다르다."""
+    from ..theme import contrast
+    if contrast(PALETTE['ink'], background) >= contrast(PALETTE['on_accent'],
+                                                        background):
+        return PALETTE['ink']
+    return PALETTE['on_accent']

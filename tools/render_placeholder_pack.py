@@ -159,6 +159,8 @@ def main(argv: list[str] | None = None) -> int:
                         help='소품 폴더 (기본: resources/props)')
     parser.add_argument('--states', default='',
                         help='쉼표로 구분. 비우면 전체')
+    parser.add_argument('--quiet', action='store_true',
+                        help='조용히. 테스트에서 부를 때 쓴다')
     args = parser.parse_args(argv)
 
     try:
@@ -189,8 +191,9 @@ def main(argv: list[str] | None = None) -> int:
     prop_glasses().save(art.prop_path(props, 'glasses'))
     written += 2
 
-    print(f'{written}장 생성 → {out}')
-    print('원화가 아니다. 규격 확인용 자리표시다. docs/SPRITE_GUIDE_KO.md 참조.')
+    if not args.quiet:
+        print(f'{written}장 생성 → {out}')
+        print('원화가 아니다. 규격 확인용 자리표시다. docs/SPRITE_GUIDE_KO.md 참조.')
     return 0
 
 

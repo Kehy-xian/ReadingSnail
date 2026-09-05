@@ -234,6 +234,16 @@ def main(argv: list[str] | None = None) -> int:
         pet.show_once('library', lambda: LibraryPanel(
             pet.root, journal, owner=pet, on_write=on_write))
 
+    def on_shelf() -> None:
+        from .pet.panels import ShelfPanel
+        pet.show_once('shelf', lambda: ShelfPanel(
+            pet.root, journal, owner=pet, on_open_book=on_write))
+
+    def on_props() -> None:
+        from .pet.panels import PropsPanel
+        pet.show_once('props', lambda: PropsPanel(
+            pet.root, pet.sprites, settings, owner=pet, setting_key=SETTING_PROPS))
+
     def on_add_book() -> None:
         from .pet.panels import AddBookPanel
         pet.show_once('add_book', lambda: AddBookPanel(
@@ -252,7 +262,8 @@ def main(argv: list[str] | None = None) -> int:
         db.close()
 
     pet = PetWindow(on_write=lambda: on_write(), on_library=on_library,
-                    on_add_book=on_add_book, on_quit=on_quit,
+                    on_add_book=on_add_book, on_shelf=on_shelf,
+                    on_props=on_props, on_quit=on_quit,
                     resource_root=resource_root(), data_dir=data_dir)
     # 소품은 순수 사용자 선택이다 — 해금 개념이 없다(CLAUDE.md).
     if pet.sprites is not None:

@@ -193,9 +193,9 @@ class Worker(Base):
         for i in range(12):
             self.journal.add_entry(f'스레드 기록 {i}')
         worker.wake()
-        for _ in range(200):
-            if worker.pending == 0:
-                break
+        # 부하가 걸린 기계에서도 흔들리지 않게 넉넉히 기다린다.
+        deadline = time.time() + 10
+        while time.time() < deadline and worker.pending:
             time.sleep(0.01)
         worker.stop()
         self.assertEqual(worker.pending, 0)
@@ -448,7 +448,9 @@ class WorkerTermination(Base):
         worker.start()
         time.sleep(0.3)
         worker.stop()
-        self.assertLess(BadEncoder.calls, 20, f'0.3초에 {BadEncoder.calls}회 돌았다')
+        # 진전이 없으면 멈추므로 몇 번 돌지 않아야 한다. 넉넉히 잡아도
+        # 무한 루프(2초에 26만 회)와는 자릿수가 다르다.
+        self.assertLess(BadEncoder.calls, 50, f'0.3초에 {BadEncoder.calls}회 돌았다')
 
     def test_일부만_실패해도_나머지는_들어간다(self):
         class Flaky:

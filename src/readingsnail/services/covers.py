@@ -107,16 +107,88 @@ def download_cover(url: str, data_dir: str | Path, *, opener=None) -> Path:
     return target
 
 
+
+
+# ── 표지에서 색 뽑기 ──────────────────────────────────
+# 책등을 tint 할 색이다. 책장이 표지와 이어져 보이게 하는 것이 목적이라
+# 정확한 대표색보다 **너무 밝지도 어둡지도 않은 색**이 중요하다.
+_TINT_MIN_L = 0.22
+_TINT_MAX_L = 0.62
+_TINT_MIN_SAT = 0.12
+
+
+def dominant_color(path: str | Path) -> str | None:
+    """표지에서 책등에 쓸 색을 뽑는다. '#RRGGBB' 또는 None.
+
+    Pillow 가 없거나 이미지를 못 열면 None — 그때는 단색 책등으로 간다.
+    """
+    try:
+        import colorsys
+
+        from PIL import Image
+    except ImportError:
+        return None
+
+    try:
+        with Image.open(path) as source:
+            image = source.convert('RGB')
+            # 가장자리는 흰 여백인 경우가 많다. 가운데만 본다.
+            w, h = image.size
+            image = image.crop((w // 8, h // 8, w - w // 8, h - h // 8))
+            image = image.resize((48, 48))
+            reduced = image.quantize(colors=8, method=Image.Quantize.FASTOCTREE)
+            palette = reduced.getpalette() or []
+            counts = sorted(reduced.getcolors() or [], reverse=True)
+    except Exception:
+        return None
+
+    best = None
+    for count, index in counts:
+        rgb = palette[index * 3:index * 3 + 3]
+        if len(rgb) != 3:
+            continue
+        r, g, b = (v / 255 for v in rgb)
+        hue, light, sat = colorsys.rgb_to_hls(r, g, b)
+        if sat < _TINT_MIN_SAT:
+            continue                     # 무채색은 책등에서 밋밋하다
+        if not (_TINT_MIN_L <= light <= _TINT_MAX_L):
+            continue                     # 너무 밝거나 어두우면 제목이 안 읽힌다
+        best = (r, g, b)
+        break
+
+    if best is None:
+        # 조건에 맞는 게 없으면 가장 많은 색을 밝기만 맞춰 쓴다.
+        if not counts:
+            return None
+        rgb = palette[counts[0][1] * 3:counts[0][1] * 3 + 3]
+        if len(rgb) != 3:
+            return None
+        import colorsys as _c
+        r, g, b = (v / 255 for v in rgb)
+        hue, light, sat = _c.rgb_to_hls(r, g, b)
+        light = min(_TINT_MAX_L, max(_TINT_MIN_L, light))
+        best = _c.hls_to_rgb(hue, light, max(sat, _TINT_MIN_SAT))
+
+    return '#%02X%02X%02X' % tuple(round(v * 255) for v in best)
+
+
 def attach_cover(journal, book_id: str, url: str, data_dir: str | Path,
                  *, opener=None) -> Path | None:
-    """표지를 받아 책에 붙인다. 실패하면 조용히 None — 책은 그대로 남는다."""
+    """표지를 받아 책에 붙이고, 책등 색도 함께 정한다.
+
+    실패하면 조용히 None — 책은 그대로 남는다.
+    """
     try:
         path = download_cover(url, data_dir, opener=opener)
     except (CoverError, OSError):
         # 배경 스레드에서 돈다. 여기서 새면 잡아줄 사람이 없다.
         return None
+    fields: dict = {'cover_path': str(path)}
+    tint = dominant_color(path)
+    if tint:
+        fields['spine_tint'] = tint
     try:
-        journal.update_book(book_id, cover_path=str(path))
+        journal.update_book(book_id, **fields)
     except KeyError:
         return None
     return path

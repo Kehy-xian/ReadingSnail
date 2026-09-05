@@ -703,7 +703,7 @@ class SpriteRendering(unittest.TestCase):
         # 함께 두어야 '상태별 폴백'을 제대로 시험할 수 있다.
         renderer.main([str(cls.pack),
                        '--props', str(cls.resource_root / 'resources' / 'props'),
-                       '--states', 'idle,talk'])
+                       '--states', 'idle,talk', '--quiet'])
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -912,3 +912,174 @@ class LibraryPanelBehaviour(unittest.TestCase):
             self.assertEqual(len(panel.tree.get_children()), 120)
         finally:
             panel.close()
+
+
+@unittest.skipUnless(GUI, REASON)
+class ShelfAndProps(unittest.TestCase):
+    """책장은 이 앱의 유일한 보상 화면이다. 소품은 해금 없이 그냥 고른다."""
+
+    def setUp(self) -> None:
+        import os
+        from tempfile import TemporaryDirectory
+        self._tmp = TemporaryDirectory()
+        os.environ['READINGSNAIL_DATA_DIR'] = self._tmp.name
+
+        from readingsnail.paths import default_db_path
+        from readingsnail.pet.window import PetWindow
+        from readingsnail.storage.db import open_database
+        from readingsnail.storage.journal import Journal
+        from readingsnail.storage.settings import Settings
+
+        self.db = open_database(default_db_path())
+        self.journal = Journal(self.db)
+        self.settings = Settings(self.db)
+        self.pet = PetWindow(start_at=(120, 120))
+
+    def tearDown(self) -> None:
+        import os
+        self.pet.close()
+        self.db.close()
+        os.environ.pop('READINGSNAIL_DATA_DIR', None)
+        self._tmp.cleanup()
+
+    def _shelf(self, **kw):
+        from readingsnail.pet.panels import ShelfPanel
+        return ShelfPanel(self.pet.root, self.journal, **kw)
+
+    def test_다_읽은_책만_꽂힌다(self):
+        done = self.journal.add_book('다 읽은 책', status='completed')
+        self.journal.add_book('읽는 중인 책')
+        panel = self._shelf()
+        try:
+            self.pet.root.update()
+            self.assertEqual([s.book_id for s in panel.slots], [done.book_id])
+        finally:
+            panel.close()
+
+    def test_책이_없으면_안내가_뜬다(self):
+        panel = self._shelf()
+        try:
+            self.pet.root.update()
+            texts = [panel.canvas.itemcget(i, 'text')
+                     for i in panel.canvas.find_all()
+                     if panel.canvas.type(i) == 'text']
+            self.assertTrue(any('아직' in t for t in texts), texts)
+        finally:
+            panel.close()
+
+    def test_책을_누르면_그_책이_열린다(self):
+        book = self.journal.add_book('월든', status='completed')
+        opened: list[str] = []
+        panel = self._shelf(on_open_book=opened.append)
+        try:
+            self.pet.root.update()
+            slot = panel.slots[0]
+
+            class Event:
+                x = slot.x + 3
+                y = slot.y + 6
+
+            panel._click(Event())
+            self.assertEqual(opened, [book.book_id])
+        finally:
+            panel.close()
+
+    def test_빈_곳을_눌러도_아무_일_없다(self):
+        self.journal.add_book('월든', status='completed')
+        opened: list[str] = []
+        panel = self._shelf(on_open_book=opened.append)
+        try:
+            self.pet.root.update()
+
+            class Event:
+                x = 3
+                y = 3
+
+            panel._click(Event())
+            self.assertEqual(opened, [])
+        finally:
+            panel.close()
+
+    def test_책등_글자가_바탕에서_읽힌다(self):
+        """책등 색은 표지마다 다르다. 어두운 책등에는 밝은 글자가 와야 한다."""
+        from readingsnail.pet.panels import _readable_on
+        from readingsnail.theme import PALETTE, contrast
+        for background in ('#B33B3B', '#273B8B', '#F2EADC', PALETTE['paper_deep']):
+            picked = _readable_on(background)
+            self.assertGreaterEqual(contrast(picked, background), 3.0, background)
+
+    def test_소품은_해금_없이_고른다(self):
+        from readingsnail.pet.panels import PropsPanel
+        panel = PropsPanel(self.pet.root, None, self.settings)
+        try:
+            self.assertEqual(panel.selected(), ())
+        finally:
+            panel.close()
+
+    def test_고른_소품이_설정에_남는다(self):
+        from readingsnail.pet.panels import PropsPanel
+
+        class FakeSprites:
+            def __init__(self):
+                self.props = ()
+
+            def available_props(self):
+                return ('leaf', 'glasses')
+
+            def set_props(self, props):
+                self.props = tuple(props)
+
+        sprites = FakeSprites()
+        changed: list = []
+        panel = PropsPanel(self.pet.root, sprites, self.settings,
+                           on_change=changed.append)
+        try:
+            panel.vars['leaf'].set(True)
+            panel._apply()
+            self.assertEqual(self.settings.get('pet.props'), 'leaf')
+            self.assertEqual(sprites.props, ('leaf',))
+            self.assertEqual(changed, [('leaf',)])
+        finally:
+            panel.close()
+
+    def test_많은_책도_잘리지_않고_사실대로_센다(self):
+        """조용히 절반만 보여주면 사용자는 책이 사라진 줄 안다."""
+        for i in range(300):
+            self.journal.add_book(f'책 {i}', status='completed')
+        panel = self._shelf()
+        try:
+            self.pet.root.update()
+            self.assertEqual(len(panel.slots), 300)
+            self.assertIn('300권', panel.summary.cget('text'))
+        finally:
+            panel.close()
+
+    def test_크기_변경이_폭주해도_한_번만_다시_그린다(self):
+        import time
+        for i in range(60):
+            self.journal.add_book(f'책 {i}', status='completed')
+        panel = self._shelf()
+        try:
+            self.pet.root.update()
+            calls = []
+            original = panel.refresh
+            panel.refresh = lambda: (calls.append(1), original())[1]
+            for width in range(320, 560, 10):
+                panel.top.geometry(f'{width}x420')
+                self.pet.root.update()
+            deadline = time.time() + 0.5
+            while time.time() < deadline:
+                self.pet.root.update()
+                time.sleep(0.02)
+            self.assertLessEqual(len(calls), 3,
+                                 f'{len(calls)}번 다시 그렸다 — 디바운스가 안 먹는다')
+        finally:
+            panel.refresh = original
+            panel.close()
+
+    def test_책장을_닫으면_예약된_다시_그리기가_취소된다(self):
+        panel = self._shelf()
+        panel._schedule_refresh()
+        self.assertIsNotNone(panel._refresh_after)
+        panel.close()
+        self.assertIsNone(panel._refresh_after)

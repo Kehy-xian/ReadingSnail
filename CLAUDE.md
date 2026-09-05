@@ -44,13 +44,13 @@ onnxruntime (임베딩 인코딩 전용) / PyInstaller onedir / Inno Setup
 `docs/SPEC.md`가 확정 명세, `docs/PORTING_MAP.md`가 전작에서 가져올 것과
 버릴 것의 목록이다. 작업 전에 둘 다 읽을 것.
 
-**1~5단계 완료.** `python -m readingsnail` 로 뜨고, 책을 검색해 등록하고, 기록을
-남기면 잠시 뒤 달팽이가 비슷한 옛 기록을 꺼낸다. 6단계(디자인 정비)가 다음이다.
+**1~6단계 완료.** `python -m readingsnail` 로 뜨고, 책을 검색해 등록하고, 기록을
+남기면 잠시 뒤 달팽이가 비슷한 옛 기록을 꺼낸다. 7단계(운영 — 트레이·단일 인스턴스·내보내기·설치본)가 다음이다.
 
 **원화는 아직 없다.** 자리표시 팩으로 파이프라인만 검증했다
 (`python tools/render_placeholder_pack.py` — 저장소에 커밋하지 않는다).
 
-동작이 검증된 것 — `python -m unittest discover -s tests` (289건 통과)
+동작이 검증된 것 — `python -m unittest discover -s tests` (314건 통과)
 GUI 테스트는 tkinter·디스플레이가 없으면 자동으로 건너뛴다.
 
 | 있는 것 | 파일 |
@@ -80,10 +80,12 @@ GUI 테스트는 tkinter·디스플레이가 없으면 자동으로 건너뛴다
 | 달팽이 창 (단일 클래스) | `pet/window.py` |
 | 기록·서재·책 등록 창 | `pet/panels.py` |
 | ttk 스타일 (팔레트 적용) | `pet/styling.py` |
+| 책장 배치 (순수 계산) | `pet/shelf.py` |
+| 표지 색 추출 → 책등 tint | `services/covers.py` |
 | 실행 진입점 | `__main__.py` |
 | 폰트·색 (대비 검증됨) | `theme.py` |
 
-비어 있는 것 — **원화**, 책장 뷰, 주간 요약, 트레이, 내보내기, 빌드 스펙. **번들 모델(multilingual-e5-small ONNX)도 아직 없다** —
+비어 있는 것 — **원화**, 주간 요약, 트레이, 단일 인스턴스, 내보내기, 빌드 스펙. **번들 모델(multilingual-e5-small ONNX)도 아직 없다** —
 없어도 앱은 돌고 기록도 쌓인다. 되살리기만 조용히 쉰다. `docs/PORTING_MAP.md`대로 전작에서 가져와 채운다.
 
 패널은 6-b 에서 ttk 로 다시 짰다. 색·폰트는 `pet/styling.py` 를 거치며,
@@ -198,6 +200,19 @@ journal.add_entry('숲으로 간 이유', book_id=book.book_id, kind='quote', pa
     `panels._search_worker` 처럼 필요한 값만 넘긴다.
   · **패널의 `StringVar` 와 예약한 `after` 는 `<Destroy>` 에서 거둔다.**
     owner 등록만 믿으면 owner 없이 만든 패널이 Tk 자원을 남긴다.
+
+## 화면을 만들 때
+
+  · **배치 계산은 순수 함수로 뺀다.** `pet/shelf.py` 는 tkinter 를 부르지 않아
+    화면 없이 검증된다. 이동 로직(`pet/behavior.py`)과 같은 태도다.
+  · **흐트러뜨리되 흔들리지 않게.** 책의 기울임·눕힘은 `book_id` 해시로 정한다.
+    무작위로 하면 창을 열 때마다 책이 춤춘다.
+  · **`<Configure>` 에 무거운 일을 직접 걸지 않는다.** 창 크기를 끌면 초당 수십
+    번 온다. `after` 로 모았다 한 번만 그린다(실측: 40회 → 1회).
+  · **잘렸으면 잘렸다고 말한다.** 책장이 상한을 넘으면 '1000권 중 500권 표시'
+    라고 적는다. 조용히 절반만 보여주면 사용자는 책이 사라진 줄 안다.
+  · 책등 글자색은 `_readable_on()` 이 바탕에 맞춰 고른다. 책등 색은 표지마다
+    다르므로 한 색으로 고정할 수 없다.
 
 ## 무너져도 기록에는 닿아야 한다
 

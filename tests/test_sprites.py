@@ -104,7 +104,7 @@ class Composition(unittest.TestCase):
         cls.pack = Path(cls._tmp.name) / 'sprites'
         cls.props = Path(cls._tmp.name) / 'props'
         renderer.main([str(cls.pack), '--props', str(cls.props),
-                       '--states', 'idle,walk'])
+                       '--states', 'idle,walk', '--quiet'])
 
     @classmethod
     def tearDownClass(cls) -> None:
@@ -177,7 +177,7 @@ class Validation(unittest.TestCase):
         self._tmp = TemporaryDirectory()
         self.pack = Path(self._tmp.name) / 'sprites'
         renderer.main([str(self.pack), '--props', str(Path(self._tmp.name) / 'props'),
-                       '--states', 'idle'])
+                       '--states', 'idle', '--quiet'])
 
     def tearDown(self) -> None:
         self._tmp.cleanup()
@@ -238,7 +238,7 @@ class Install(unittest.TestCase):
         self.root = Path(self._tmp.name)
         self.pack = self.root / 'art'
         renderer.main([str(self.pack), '--props', str(self.root / 'props'),
-                       '--states', 'idle,walk'])
+                       '--states', 'idle,walk', '--quiet'])
 
     def tearDown(self) -> None:
         self._tmp.cleanup()
@@ -282,7 +282,7 @@ class MalformedArt(unittest.TestCase):
         self._tmp = TemporaryDirectory()
         self.pack = Path(self._tmp.name) / 'sprites'
         self.props = Path(self._tmp.name) / 'props'
-        renderer.main([str(self.pack), '--props', str(self.props), '--states', 'idle'])
+        renderer.main([str(self.pack), '--props', str(self.props), '--states', 'idle', '--quiet'])
 
     def tearDown(self) -> None:
         self._tmp.cleanup()

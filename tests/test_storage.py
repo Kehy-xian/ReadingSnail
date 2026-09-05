@@ -270,3 +270,92 @@ class OnDisk(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)
+
+
+class StartupResilience(unittest.TestCase):
+    """설치가 덜 끝났거나 파일이 손상돼도 기록에는 닿을 수 있어야 한다."""
+
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_시드가_깨져도_DB는_열린다(self):
+        """명언은 장식이고 기록이 본체다. 시드 하나 때문에 앱이 안 열리면
+        사용자는 자기 기록에 접근할 길이 없어진다."""
+        from readingsnail.storage.seed import seed_quotes
+        cases = {
+            'broken.json': '{ not json',
+            'empty.json': '',
+            'nokey.json': '{"seed_version": 1}',
+            'nosource.json': '{"seed_version":1,"quotes":[{"id":"x","body":"b","source":""}]}',
+        }
+        for name, content in cases.items():
+            path = self.tmp / name
+            path.write_text(content, encoding='utf-8')
+            db = Database(':memory:')
+            try:
+                with db.connect() as con:
+                    self.assertEqual(seed_quotes(con, path), 0, name)
+                    self.assertEqual(
+                        con.execute('SELECT count(*) AS n FROM entries').fetchone()['n'], 0)
+            finally:
+                db.close()
+
+    def test_시드_파일이_아예_없어도_열린다(self):
+        from readingsnail.storage.seed import seed_quotes
+        db = Database(':memory:')
+        try:
+            with db.connect() as con:
+                self.assertEqual(seed_quotes(con, self.tmp / '없음.json'), 0)
+        finally:
+            db.close()
+
+    def test_strict는_여전히_알려준다(self):
+        """시드를 고칠 때 실수를 잡으려면 이쪽을 쓴다."""
+        from readingsnail.storage.seed import seed_quotes
+        db = Database(':memory:')
+        try:
+            with db.connect() as con:
+                with self.assertRaises(OSError):
+                    seed_quotes(con, self.tmp / '없음.json', strict=True)
+        finally:
+            db.close()
+
+    def test_번들_시드는_여전히_들어간다(self):
+        from readingsnail.storage.seed import seed_quotes
+        db = Database(':memory:')
+        try:
+            with db.connect() as con:
+                self.assertEqual(seed_quotes(con), 24)
+        finally:
+            db.close()
+
+    def test_기록_폴더_경로가_파일이면_분명히_알려준다(self):
+        blocker = self.tmp / '파일임'
+        blocker.write_text('x', encoding='utf-8')
+        with self.assertRaises(StorageError):
+            Database(blocker / 'readingsnail.sqlite3')
+
+    def test_DB가_손상되면_StorageError(self):
+        broken = self.tmp / 'broken.sqlite3'
+        broken.write_bytes('SQLite 가 아니다'.encode('utf-8') * 100)
+        with self.assertRaises(StorageError):
+            Database(broken)
+
+    def test_FTS가_어긋나도_재구축으로_복구된다(self):
+        from readingsnail.storage import search
+        db = Database(':memory:')
+        try:
+            Journal(db).add_entry('원래 문장 달팽이')
+            with db.write() as con:
+                con.execute("INSERT INTO entries_fts(entries_fts) VALUES('delete-all')")
+            with db.connect() as con:
+                self.assertEqual(len(search.search_entries(con, '달팽이')), 0)
+            with db.connect() as con:
+                search.rebuild_index(con)
+                self.assertEqual(len(search.search_entries(con, '달팽이')), 1)
+        finally:
+            db.close()

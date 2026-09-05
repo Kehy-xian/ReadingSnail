@@ -622,3 +622,58 @@ class SearchDoesNotFreezeUI(unittest.TestCase):
             panel.search()
         self.assertTrue(panel._searching)
         self.assertLessEqual(panel._found.qsize(), 1)
+
+
+@unittest.skipUnless(GUI, REASON)
+class OnePanelAtATime(unittest.TestCase):
+    """같은 기록 창을 두 번 열면 둘이 같은 초안을 두고 다툰다."""
+
+    def setUp(self) -> None:
+        import os
+        from tempfile import TemporaryDirectory
+        self._tmp = TemporaryDirectory()
+        os.environ['READINGSNAIL_DATA_DIR'] = self._tmp.name
+
+        from readingsnail.paths import default_db_path
+        from readingsnail.pet.window import PetWindow
+        from readingsnail.storage.db import open_database
+        from readingsnail.storage.drafts import Drafts
+        from readingsnail.storage.journal import Journal
+
+        self.db = open_database(default_db_path())
+        self.journal = Journal(self.db)
+        self.drafts = Drafts(self.db)
+        self.pet = PetWindow(start_at=(120, 120))
+
+    def tearDown(self) -> None:
+        import os
+        self.pet.close()
+        self.db.close()
+        os.environ.pop('READINGSNAIL_DATA_DIR', None)
+        self._tmp.cleanup()
+
+    def _factory(self):
+        from readingsnail.pet.panels import WritePanel
+        return lambda: WritePanel(self.pet.root, self.journal, self.drafts, owner=self.pet)
+
+    def test_두_번_열어도_창은_하나다(self):
+        make = self._factory()
+        first = self.pet.show_once('write', make)
+        second = self.pet.show_once('write', make)
+        self.assertIs(first, second)
+
+    def test_먼저_쓴_글이_덮이지_않는다(self):
+        from readingsnail.storage.drafts import Drafts as D
+        make = self._factory()
+        panel = self.pet.show_once('write', make)
+        panel.text.insert('1.0', '첫 창 글')
+        self.pet.show_once('write', make)          # 다시 열기 시도
+        self.pet.close()
+        self.assertEqual(self.drafts.load(D.key_for_book(None)).body, '첫 창 글')
+
+    def test_닫은_뒤에는_새로_열린다(self):
+        make = self._factory()
+        first = self.pet.show_once('write', make)
+        first.close()
+        second = self.pet.show_once('write', make)
+        self.assertIsNot(first, second)

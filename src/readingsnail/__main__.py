@@ -217,15 +217,18 @@ def main(argv: list[str] | None = None) -> int:
 
     def on_write() -> None:
         from .pet.panels import WritePanel
-        WritePanel(pet.root, journal, drafts, owner=pet, on_saved=companion.note_saved)
+        # 같은 창을 두 번 열면 두 창이 같은 초안을 두고 다툰다. 하나만 띄운다.
+        pet.show_once('write', lambda: WritePanel(
+            pet.root, journal, drafts, owner=pet, on_saved=companion.note_saved))
 
     def on_library() -> None:
         from .pet.panels import LibraryPanel
-        LibraryPanel(pet.root, journal)
+        pet.show_once('library', lambda: LibraryPanel(pet.root, journal))
 
     def on_add_book() -> None:
         from .pet.panels import AddBookPanel
-        AddBookPanel(pet.root, journal, source=catalog, on_added=fetch_cover)
+        pet.show_once('add_book', lambda: AddBookPanel(
+            pet.root, journal, source=catalog, on_added=fetch_cover))
 
     def fetch_cover(book_id: str, url: str | None) -> None:
         """표지 내려받기는 네트워크다. UI 스레드를 막지 않는다."""

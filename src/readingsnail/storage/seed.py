@@ -46,12 +46,24 @@ def load_seed_file(path: Path | None = None) -> list[dict[str, str]]:
     return quotes
 
 
-def seed_quotes(conn: sqlite3.Connection, path: Path | None = None) -> int:
+def seed_quotes(conn: sqlite3.Connection, path: Path | None = None,
+                *, strict: bool = False) -> int:
     """아직 넣은 적 없는 명언만 넣는다. 넣은 건수를 돌려준다.
 
     여러 번 불러도 안전하다(멱등).
+
+    **시드 파일이 깨져도 앱은 켜져야 한다.** 명언은 장식이고 기록이 본체다.
+    설치가 덜 끝났거나 파일이 손상됐다고 앱 전체가 안 열리면 사용자는 자기
+    기록에 접근할 길이 없어진다. 그때는 달팽이의 말수가 줄 뿐이다.
+
+    strict=True 는 도구·테스트용이다. 시드를 고칠 때 실수를 잡으려면 이쪽을 쓴다.
     """
-    quotes = load_seed_file(path)
+    try:
+        quotes = load_seed_file(path)
+    except (OSError, ValueError, KeyError, json.JSONDecodeError):
+        if strict:
+            raise
+        return 0
     applied = {row[0] for row in conn.execute('SELECT quote_id FROM quote_seed_log')}
     fresh = [q for q in quotes if q['id'] not in applied]
     if not fresh:

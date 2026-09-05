@@ -42,7 +42,15 @@ class Database:
     def __init__(self, path: str | Path, *, apply_schema: bool = True):
         self.path = str(path)
         if self.path != ':memory:':
-            Path(self.path).expanduser().parent.mkdir(parents=True, exist_ok=True)
+            folder = Path(self.path).expanduser().parent
+            try:
+                folder.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                # 경로 중간이 파일이거나 쓸 수 없는 곳이다. 여기서 분명히 알려주지
+                # 않으면 FileExistsError 가 부팅 화면까지 그대로 올라간다.
+                raise StorageError(f'기록을 둘 폴더를 만들 수 없다: {folder} ({exc})') from exc
+            if not folder.is_dir():
+                raise StorageError(f'기록을 둘 곳이 폴더가 아니다: {folder}')
         # 열려 있는 쓰기 트랜잭션의 연결을 스레드별로 들고 있는다.
         # 중첩 write() 와 write() 안의 읽기가 같은 연결을 쓰게 하기 위한 것이다.
         self._local = threading.local()

@@ -128,6 +128,8 @@ class PetWindow:
         # 창을 닫기 전에 불러줄 것들. 패널이 쓰던 글을 초안으로 남길 기회다.
         # root.destroy() 는 자식 Toplevel 을 그냥 없애버리므로 이게 없으면 글이 사라진다.
         self._closers: list[Callable[[], None]] = []
+        # 한 번에 하나만 띄우는 창들. show_once() 가 관리한다.
+        self._panels: dict[str, object] = {}
 
         self.canvas.bind('<ButtonPress-1>', self._drag_start)
         self.canvas.bind('<B1-Motion>', self._drag_move)
@@ -371,6 +373,27 @@ class PetWindow:
         self._draw_loop()
         self.root.mainloop()
 
+    def show_once(self, key: str, factory: Callable[[], object]) -> object:
+        """같은 종류의 창을 두 번 열지 않는다. 이미 있으면 앞으로 끌어온다.
+
+        기록 창을 두 번 열면 둘 다 같은 draft_key 를 쓴다. 양쪽에 글을 쓰고 닫으면
+        **나중에 닫은 쪽이 앞의 글을 덮어쓴다.** 글을 잃지 않는다는 원칙이 깨진다.
+        """
+        panel = self._panels.get(key)
+        top = getattr(panel, 'top', None)
+        if top is not None:
+            try:
+                if top.winfo_exists():
+                    top.deiconify()
+                    top.lift()
+                    top.focus_force()
+                    return panel
+            except tk.TclError:
+                pass
+        panel = factory()
+        self._panels[key] = panel
+        return panel
+
     def register_closer(self, closer: Callable[[], None]) -> None:
         """창이 닫히기 전에 불릴 정리 함수. 패널이 자기 초안을 저장할 기회다."""
         self._closers.append(closer)
@@ -402,6 +425,7 @@ class PetWindow:
             except Exception:
                 pass
         self._closers.clear()
+        self._panels.clear()
         self._call(self.on_quit)
         try:
             self.root.destroy()

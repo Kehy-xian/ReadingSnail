@@ -255,3 +255,40 @@ class Migration(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)
+
+
+class CorruptLegacy(unittest.TestCase):
+    """손상된 전작 DB 를 지목해도 부팅 대화상자가 터지면 안 된다."""
+
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.db = Database(':memory:')
+
+    def tearDown(self) -> None:
+        self.db.close()
+        self._tmp.cleanup()
+
+    def test_SQLite가_아닌_파일(self):
+        bad = self.tmp / 'bad.sqlite3'
+        bad.write_bytes('SQLite 가 아니다'.encode('utf-8') * 100)
+        self.assertFalse(legacy_looks_migratable(bad))
+        with self.assertRaises(MigrationError):
+            migrate(self.db, bad)
+
+    def test_헤더만_있고_내용이_깨진_파일(self):
+        half = self.tmp / 'half.sqlite3'
+        con = sqlite3.connect(half)
+        con.executescript('CREATE TABLE reading_entries(feed_id TEXT PRIMARY KEY,'
+                          ' note_text TEXT NOT NULL, created_at TEXT)')
+        con.execute("INSERT INTO reading_entries VALUES ('f1','기록','2024-01-01 00:00:00')")
+        con.commit()
+        con.close()
+        raw = bytearray(half.read_bytes())
+        raw[24:40] = b'\x00' * 16
+        half.write_bytes(bytes(raw))
+        try:
+            migrate(self.db, half)
+        except MigrationError:
+            pass                      # 알려주고 끝나면 된다
+        # 어느 쪽이든 날 sqlite3.DatabaseError 가 새어 나오면 안 된다

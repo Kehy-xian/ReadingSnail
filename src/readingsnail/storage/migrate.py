@@ -143,7 +143,12 @@ def migrate(db: Database, legacy_path: str | Path) -> MigrationReport:
     report = MigrationReport(source=str(legacy_path))
     src = _open_legacy(legacy_path)
     try:
-        tables = _tables(src)
+        try:
+            tables = _tables(src)
+        except sqlite3.DatabaseError as exc:
+            # 파일이 SQLite 가 아니거나 손상됐다. 날 DatabaseError 를 밖으로
+            # 흘리면 부팅 대화상자가 그대로 터진다.
+            raise MigrationError(f'전작 DB 를 읽을 수 없다: {exc}') from exc
         if not set(REQUIRED_LEGACY_TABLES) <= tables:
             raise MigrationError('BookEater 기록 테이블(reading_entries)이 없다')
 

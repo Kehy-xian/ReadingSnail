@@ -20,8 +20,9 @@ backups/
 resources/models/**/*.onnx
 resources/models/**/tokenizer.json
 
-# 폰트 — 라이선스 확인 후 개별 허용할 것
+# 폰트 — 라이선스 확인 후 개별 허용할 것 (OFL 전문도 함께 넣어야 한다)
 resources/fonts/*
+!resources/fonts/README.txt
 
 # 자리표시 스프라이트는 생성물이다. 원화가 오면 그때 커밋한다.
 #   python tools/render_placeholder_pack.py

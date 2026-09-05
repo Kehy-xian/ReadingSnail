@@ -50,7 +50,7 @@ onnxruntime (임베딩 인코딩 전용) / PyInstaller onedir / Inno Setup
 **원화는 아직 없다.** 자리표시 팩으로 파이프라인만 검증했다
 (`python tools/render_placeholder_pack.py` — 저장소에 커밋하지 않는다).
 
-동작이 검증된 것 — `python -m unittest discover -s tests` (270건 통과)
+동작이 검증된 것 — `python -m unittest discover -s tests` (282건 통과)
 GUI 테스트는 tkinter·디스플레이가 없으면 자동으로 건너뛴다.
 
 | 있는 것 | 파일 |
@@ -80,7 +80,7 @@ GUI 테스트는 tkinter·디스플레이가 없으면 자동으로 건너뛴다
 | 달팽이 창 (단일 클래스) | `pet/window.py` |
 | 기록·서재 창 (임시) | `pet/panels.py` |
 | 실행 진입점 | `__main__.py` |
-| 폰트·색 상수 | `theme.py` |
+| 폰트·색 (대비 검증됨) | `theme.py` |
 
 비어 있는 것 — **원화**, 책장 뷰, 주간 요약, 트레이, 내보내기, 빌드 스펙. **번들 모델(multilingual-e5-small ONNX)도 아직 없다** —
 없어도 앱은 돌고 기록도 쌓인다. 되살리기만 조용히 쉰다. `docs/PORTING_MAP.md`대로 전작에서 가져와 채운다.
@@ -148,6 +148,25 @@ journal.add_entry('숲으로 간 이유', book_id=book.book_id, kind='quote', pa
     가 한 건도 못 썼는데 True 를 돌려주면 같은 배치를 영원히 다시 집어온다
     (실측 2초에 26만 회). '더 할 일이 있다'가 아니라 '실제로 진전했다'를
     돌려줄 것.
+
+## 색을 고를 때
+
+**대비를 계산하고 고른다.** 눈으로 보면 놓친다 — 이전 팔레트는 이끼색 버튼 위
+흰 글자가 **2.25** 였다(기준 4.5). `tests/test_theme.py` 가 모든 글자 조합을 지킨다.
+
+  · **채우기용과 글자용을 나눈다.** `moss` 는 달팽이 몸에 쓰는 연한 이끼색이라
+    글자로 쓰면 안 읽힌다. 글자·테두리는 `moss_text`, 흰 글자를 얹을 배경은
+    `moss_deep`. 이름으로 구분되게 두었다.
+  · `line` 은 **장식용 구분선**이다(대비 1.3). 뜻을 담는 테두리에는 `border`(3.1)를 쓴다.
+  · 새 색을 넣으면 `tests/test_theme.py` 의 `PAIRS` 에도 넣을 것.
+
+**폰트는 설치하지 않고 등록한다.** `theme.load_bundled_fonts()` 가 Windows 에서
+`AddFontResourceExW(FR_PRIVATE)` 로 이 프로세스에만 올린다. 사용자 컴퓨터에
+폰트를 설치하지 않는다. `tk.Tk()` 보다 먼저 부를 것.
+
+동봉 폰트는 NanumSquareRound(NAVER)·Pretendard 둘 다 **SIL OFL 1.1** 이라
+번들·재배포가 허용된다. 다만 **라이선스 전문을 함께 배포해야 한다** —
+빠뜨리면 위반이다. `resources/fonts/README.txt` 참조.
 
 ## 그림을 다룰 때
 

@@ -31,6 +31,7 @@ from .storage.drafts import Drafts
 from .storage.journal import Journal
 from .storage.migrate import MigrationError, legacy_looks_migratable, migrate
 from .storage.settings import Settings
+from .theme import load_bundled_fonts
 
 # 주기적으로 한 마디. 너무 잦으면 잔소리가 된다.
 SPEAK_EVERY_MS = 6 * 60 * 1000
@@ -205,6 +206,9 @@ def main(argv: list[str] | None = None) -> int:
     from .pet.window import PetWindow, enable_dpi_awareness
 
     enable_dpi_awareness()          # Tk 보다 먼저
+    # 동봉 폰트를 이 프로세스에만 등록한다. 사용자 컴퓨터에 설치하지 않는다.
+    # Tk 를 만들기 전에 해야 첫 창부터 제대로 된 폰트로 뜬다.
+    load_bundled_fonts(resource_root())
 
     try:
         db = open_database(default_db_path())

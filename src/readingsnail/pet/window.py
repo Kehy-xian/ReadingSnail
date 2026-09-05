@@ -413,7 +413,7 @@ class PetWindow:
                              justify='center')
         x0, y0, x1, y1 = c.bbox(item)
         c.create_rectangle(x0 - pad, y0 - pad, x1 + pad, y1 + pad,
-                           fill=PALETTE['paper'], outline=PALETTE['line'],
+                           fill=PALETTE['paper'], outline=PALETTE['border'],
                            width=max(1, 1.5 * s))
         c.tag_raise(item)
 

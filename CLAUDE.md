@@ -44,10 +44,10 @@ onnxruntime (임베딩 인코딩 전용) / PyInstaller onedir / Inno Setup
 `docs/SPEC.md`가 확정 명세, `docs/PORTING_MAP.md`가 전작에서 가져올 것과
 버릴 것의 목록이다. 작업 전에 둘 다 읽을 것.
 
-**1~3단계 완료.** `python -m readingsnail` 로 뜨고, 기록을 남기면 잠시 뒤 달팽이가
-비슷한 옛 기록을 꺼낸다. 4단계(국중 서지 API, INT8 양자화)가 다음이다.
+**1~4단계 완료.** `python -m readingsnail` 로 뜨고, 책을 검색해 등록하고, 기록을
+남기면 잠시 뒤 달팽이가 비슷한 옛 기록을 꺼낸다. 5단계(스프라이트)가 다음이다.
 
-동작이 검증된 것 — `python -m unittest discover -s tests` (158건 통과)
+동작이 검증된 것 — `python -m unittest discover -s tests` (207건 통과)
 GUI 테스트는 tkinter·디스플레이가 없으면 자동으로 건너뛴다.
 
 | 있는 것 | 파일 |
@@ -64,6 +64,9 @@ GUI 테스트는 tkinter·디스플레이가 없으면 자동으로 건너뛴다
 | 발화 엔진 (저장소 연결·반복 방지) | `services/speaker.py` |
 | 의미 검색 되살리기 | `services/recall.py` |
 | 배경 임베딩 작업자 | `services/embedding.py` |
+| 서지 검색 어댑터 (국중·프록시) | `services/catalog/` |
+| 표지 내려받기 (로컬 저장) | `services/covers.py` |
+| INT8 양자화 도구 | `tools/quantize_model.py` |
 | 벡터 저장 형식·유사도 (순수 파이썬) | `nlp/vectors.py` |
 | E5 ONNX 인코더 (게으른 적재) | `nlp/encoder.py` |
 | 8방향 이동 (순수 로직) | `pet/behavior.py` |
@@ -72,8 +75,8 @@ GUI 테스트는 tkinter·디스플레이가 없으면 자동으로 건너뛴다
 | 실행 진입점 | `__main__.py` |
 | 폰트·색 상수 | `theme.py` |
 
-비어 있는 것 — 스프라이트 파이프라인, 서지 API, 책장 뷰, 주간 요약, 트레이,
-내보내기, 빌드 스펙. **번들 모델(multilingual-e5-small ONNX)도 아직 없다** —
+비어 있는 것 — 스프라이트 파이프라인, 책장 뷰, 주간 요약, 트레이, 내보내기,
+빌드 스펙. **번들 모델(multilingual-e5-small ONNX)도 아직 없다** —
 없어도 앱은 돌고 기록도 쌓인다. 되살리기만 조용히 쉰다. `docs/PORTING_MAP.md`대로 전작에서 가져와 채운다.
 
 `pet/panels.py`는 **일부러 꾸미지 않았다.** 기능(1~4) → 디자인(5~6) 순서이므로
@@ -96,6 +99,23 @@ journal.add_entry('숲으로 간 이유', book_id=book.book_id, kind='quote', pa
 맡고 `Journal`·`Drafts`·`Settings`가 그것을 받아 쓴다. 연결은 메서드마다 짧게 열고
 닫는데, 이건 전작의 의도적 설계를 그대로 가져온 것이다 — UI 스레드와 임베딩
 백그라운드 작업이 같은 DB를 보므로 연결을 물고 있으면 안 된다.
+
+## 서지 검색을 손댈 때
+
+**어댑터 뒤에서만 바꾼다.** 올해만 두 곳이 문을 닫았다(알라딘 2026-10-30 종료,
+카카오는 DB 영구 저장 제한). 앱의 나머지는 `BookSource` 인터페이스만 안다.
+
+  · **국중 응답 필드명을 실물로 확인하지 못했다.** 이 코드를 쓴 환경에서 국중
+    문서와 공공데이터포털이 모두 막혀 있었다. `nlk.FIELDS` 한 곳에 모아 뒀으니
+    cert_key 를 받으면 `describe_response()` 를 한 번 돌려 맞출 것.
+    필드가 하나 어긋나도 검색이 통째로 죽지는 않는다.
+  · **인증키는 질의 문자열로 나간다.** URL 이 로그나 예외에 섞이면 그대로 샌다.
+    밖으로 흘리는 모든 문자열은 `base.redact()` 를 거친다. 키를 아예 앱에
+    두지 않는 길이 `proxy.py`(Cloudflare Worker)다.
+  · **수동 입력은 폴백이 아니라 언제나 되는 길이다.** 검색 실패가 등록 실패가
+    되면 안 된다. `search_books()` 가 예외를 밖으로 던지지 않는 이유다.
+  · 표지는 내려받아 로컬에 둔다. **외부 URL 을 DB 에 넣지 않는다.**
+    전작이 알라딘 URL 을 박아둔 탓에 이전 때 되살릴 수 없었다.
 
 ## 스레드 규칙
 

@@ -404,3 +404,133 @@ class ThreadBoundary(unittest.TestCase):
         self.pet.close()
         self.pet.say('닫힌 뒤의 말')          # TclError 가 나면 안 된다
         self.assertIsNone(self.pet._bubble)
+
+
+@unittest.skipUnless(GUI, REASON)
+class AddBook(unittest.TestCase):
+    """책 등록 창. 검색이 죽어도 수동 입력은 늘 열려 있어야 한다."""
+
+    def setUp(self) -> None:
+        import io
+        import json
+        import os
+        from tempfile import TemporaryDirectory
+
+        self._tmp = TemporaryDirectory()
+        os.environ['READINGSNAIL_DATA_DIR'] = self._tmp.name
+
+        from readingsnail.paths import default_db_path
+        from readingsnail.pet.window import PetWindow
+        from readingsnail.storage.db import open_database
+        from readingsnail.storage.journal import Journal
+
+        class Response(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                self.close()
+                return False
+
+        doc = {'TITLE': '월든', 'AUTHOR': '헨리 데이비드 소로',
+               'PUBLISHER': '은행나무', 'EA_ISBN': '9788956609959',
+               'TITLE_URL': 'https://example.org/cover.png'}
+        self.opener = lambda request, timeout=None: Response(
+            json.dumps({'docs': [doc]}).encode())
+
+        self.db = open_database(default_db_path())
+        self.journal = Journal(self.db)
+        self.pet = PetWindow(start_at=(120, 120))
+
+    def tearDown(self) -> None:
+        import os
+        self.pet.close()
+        self.db.close()
+        os.environ.pop('READINGSNAIL_DATA_DIR', None)
+        self._tmp.cleanup()
+
+    def _panel(self, source):
+        from readingsnail.pet.panels import AddBookPanel
+        self.added: list = []
+        return AddBookPanel(self.pet.root, self.journal, source=source,
+                            on_added=lambda book_id, url: self.added.append((book_id, url)))
+
+    def test_검색_결과를_고르면_칸이_채워지고_등록된다(self):
+        from readingsnail.services.catalog.nlk import NationalLibrarySource
+        panel = self._panel(NationalLibrarySource('키', opener=self.opener))
+        panel.query.insert(0, '9788956609959')
+        panel.search()
+        self.pet.root.update()
+        panel.listbox.selection_set(0)
+        panel._fill_from_result()
+        self.assertEqual(panel.title_entry.get(), '월든')
+        panel.add()
+        book = self.journal.list_books()[0]
+        self.assertEqual((book.title, book.publisher, book.source),
+                         ('월든', '은행나무', 'nl'))
+
+    def test_등록_직후_표지_URL이_넘어온다(self):
+        """창을 부순 뒤에 위젯을 읽으면 TclError 가 난다. 먼저 꺼내야 한다."""
+        from readingsnail.services.catalog.nlk import NationalLibrarySource
+        panel = self._panel(NationalLibrarySource('키', opener=self.opener))
+        panel.query.insert(0, '월든')
+        panel.search()
+        self.pet.root.update()
+        panel.listbox.selection_set(0)
+        panel._fill_from_result()
+        panel.add()                       # 여기서 TclError 가 나면 안 된다
+        self.pet.root.update()
+        self.assertEqual(len(self.added), 1)
+        self.assertEqual(self.added[0][1], 'https://example.org/cover.png')
+
+    def test_등록_시점에_DB에는_표지_URL이_없다(self):
+        from readingsnail.services.catalog.nlk import NationalLibrarySource
+        panel = self._panel(NationalLibrarySource('키', opener=self.opener))
+        panel.query.insert(0, '월든')
+        panel.search()
+        self.pet.root.update()
+        panel.listbox.selection_set(0)
+        panel._fill_from_result()
+        panel.add()
+        self.assertIsNone(self.journal.list_books()[0].cover_path)
+
+    def test_검색이_죽어도_수동_등록은_된다(self):
+        from urllib.error import URLError
+
+        from readingsnail.services.catalog.nlk import NationalLibrarySource
+
+        def dead(request, timeout=None):
+            raise URLError('서비스 종료')
+
+        panel = self._panel(NationalLibrarySource('키', opener=dead))
+        panel.query.insert(0, '찾을 수 없는 책')
+        panel.search()
+        self.pet.root.update()
+        self.assertIn('직접 입력', panel.status.cget('text'))
+        self.assertEqual(panel.title_entry.get(), '찾을 수 없는 책')
+        panel.status_var.set('wishlist')
+        panel.add()
+        book = self.journal.list_books()[0]
+        self.assertEqual((book.title, book.status, book.source),
+                         ('찾을 수 없는 책', 'wishlist', 'manual'))
+
+    def test_검색이_아예_꺼져_있어도_등록된다(self):
+        panel = self._panel(None)
+        self.assertIn('직접 입력', panel.status.cget('text'))
+        panel.title_entry.insert(0, '손으로 넣은 책')
+        panel.add()
+        self.assertEqual(self.journal.list_books()[0].title, '손으로 넣은 책')
+
+    def test_제목이_비면_등록하지_않는다(self):
+        from readingsnail.pet import panels
+        panel = self._panel(None)
+        shown = []
+        original = panels.messagebox.showinfo
+        panels.messagebox.showinfo = lambda *a, **k: shown.append(a)
+        try:
+            panel.add()
+        finally:
+            panels.messagebox.showinfo = original
+        self.assertEqual(self.journal.count_books(), 0)
+        self.assertTrue(shown, '아무 안내도 없이 무시했다')
+        panel.top.destroy()

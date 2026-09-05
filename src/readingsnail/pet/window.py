@@ -83,6 +83,7 @@ class PetWindow:
         start_at: tuple[int, int] = (120, 120),
         on_write: Callable[[], None] | None = None,
         on_library: Callable[[], None] | None = None,
+        on_add_book: Callable[[], None] | None = None,
         on_quit: Callable[[], None] | None = None,
         root: tk.Tk | None = None,
     ) -> None:
@@ -90,6 +91,7 @@ class PetWindow:
         self.size = max(95, round(BASE_SIZE * self.scale))
         self.on_write = on_write
         self.on_library = on_library
+        self.on_add_book = on_add_book
         self.on_quit = on_quit
 
         self.root = root if root is not None else tk.Tk()
@@ -135,6 +137,7 @@ class PetWindow:
 
         self.menu = tk.Menu(self.root, tearoff=0)
         self.menu.add_command(label='기록 남기기', command=lambda: self._call(self.on_write))
+        self.menu.add_command(label='책 등록', command=lambda: self._call(self.on_add_book))
         self.menu.add_command(label='내 서재', command=lambda: self._call(self.on_library))
         self.menu.add_separator()
         self.menu.add_command(label='종료', command=self.close)

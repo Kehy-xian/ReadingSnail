@@ -24,7 +24,7 @@
 |---|---|
 | ~~`pet_window.py` + `pet_window_v2`~`v11`~~ | **완료.** 11단계 3,469줄 → `pet/window.py` 단일 클래스 |
 | ~~`services/dialogue.py`~~ | **완료.** 4갈래 가중치 + `services/speaker.py` 로 저장소 연결 |
-| `services/catalog.py` + `cloudflare/src/index.ts` | 알라딘 → 국립중앙도서관. Worker의 `searchBooks()` 하나만 교체하면 된다 |
+| ~~`services/catalog.py`~~ | **완료.** `services/catalog/` 어댑터 3종. Worker 를 쓰려면 `searchBooks()` 만 국중으로 바꾸면 계약은 그대로다 |
 | ~~`ci/e5_targeted_validation.py`의 `E5`~~ | **완료.** `nlp/encoder.py` — 인코더만. 성향 분류는 안 가져옴 |
 
 ## 버린다

@@ -20,14 +20,17 @@ import threading
 from collections import OrderedDict
 
 from .nlp.encoder import default_encoder
-from .paths import default_db_path, legacy_db_path, resource_root
+from .paths import default_data_dir, default_db_path, legacy_db_path, resource_root
 from .services import dialogue, recall
+from .services.catalog import build_source
+from .services.covers import attach_cover
 from .services.embedding import EmbeddingWorker
 from .services.speaker import Speaker, prune_utterance_log
 from .storage.db import StorageError, open_database
 from .storage.drafts import Drafts
 from .storage.journal import Journal
 from .storage.migrate import MigrationError, legacy_looks_migratable, migrate
+from .storage.settings import Settings
 
 # 주기적으로 한 마디. 너무 잦으면 잔소리가 된다.
 SPEAK_EVERY_MS = 6 * 60 * 1000
@@ -208,6 +211,9 @@ def main(argv: list[str] | None = None) -> int:
 
     journal = Journal(db)
     drafts = Drafts(db)
+    settings = Settings(db)
+    catalog = build_source(settings)
+    data_dir = default_data_dir()
 
     def on_write() -> None:
         from .pet.panels import WritePanel
@@ -217,11 +223,24 @@ def main(argv: list[str] | None = None) -> int:
         from .pet.panels import LibraryPanel
         LibraryPanel(pet.root, journal)
 
+    def on_add_book() -> None:
+        from .pet.panels import AddBookPanel
+        AddBookPanel(pet.root, journal, source=catalog, on_added=fetch_cover)
+
+    def fetch_cover(book_id: str, url: str | None) -> None:
+        """표지 내려받기는 네트워크다. UI 스레드를 막지 않는다."""
+        if not url:
+            return
+        threading.Thread(
+            target=attach_cover, args=(journal, book_id, url, data_dir),
+            name='cover', daemon=True).start()
+
     def on_quit() -> None:
         companion.stop()
         db.close()
 
-    pet = PetWindow(on_write=on_write, on_library=on_library, on_quit=on_quit)
+    pet = PetWindow(on_write=on_write, on_library=on_library,
+                    on_add_book=on_add_book, on_quit=on_quit)
     companion = Companion(pet, db, journal, default_encoder(resource_root()))
     _offer_migration(pet.root, db)
     companion.start()

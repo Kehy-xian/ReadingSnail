@@ -136,3 +136,124 @@ class LibraryPanel:
             self.listbox.insert('end', f'(책 없는 기록 {len(loose)}건)')
 
         tk.Label(self.top, text=f'전체 기록 {journal.count_entries()}건').pack(pady=(0, 8))
+
+
+class AddBookPanel:
+    """책을 등록한다. 검색이 안 되면 수동 입력으로 넘어간다.
+
+    서지 서비스는 또 문을 닫는다(올해만 두 곳). 검색 실패가 등록 실패가 되면
+    안 되므로, 수동 입력 칸은 **처음부터 늘 열려 있다.** 검색은 그 칸을
+    채워주는 보조일 뿐이다.
+    """
+
+    def __init__(self, parent: tk.Misc, journal: Journal, *,
+                 source=None, on_added: Callable[[str, str | None], None] | None = None):
+        self.journal = journal
+        self.source = source
+        self.on_added = on_added
+        self.results: list = []
+
+        self.top = tk.Toplevel(parent)
+        self.top.title('책 등록')
+        self.top.geometry('520x420')
+
+        bar = tk.Frame(self.top)
+        bar.pack(fill='x', padx=10, pady=(10, 4))
+        self.query = tk.Entry(bar)
+        self.query.pack(side='left', fill='x', expand=True)
+        self.query.bind('<Return>', lambda _e: self.search())
+        tk.Button(bar, text='검색', command=self.search).pack(side='left', padx=(6, 0))
+
+        self.status = tk.Label(self.top, anchor='w', text=self._idle_status())
+        self.status.pack(fill='x', padx=10)
+
+        self.listbox = tk.Listbox(self.top, height=8)
+        self.listbox.pack(fill='both', expand=True, padx=10, pady=6)
+        self.listbox.bind('<<ListboxSelect>>', lambda _e: self._fill_from_result())
+
+        form = tk.Frame(self.top)
+        form.pack(fill='x', padx=10)
+        self.title_entry = self._row(form, '제목', 0)
+        self.author_entry = self._row(form, '저자', 1)
+        self.publisher_entry = self._row(form, '출판사', 2)
+        self.isbn_entry = self._row(form, 'ISBN', 3)
+
+        self.status_var = tk.StringVar(value='reading')
+        row = tk.Frame(self.top)
+        row.pack(fill='x', padx=10, pady=6)
+        for label, value in (('읽는 중', 'reading'), ('읽고 싶은', 'wishlist'),
+                             ('다 읽음', 'completed')):
+            tk.Radiobutton(row, text=label, variable=self.status_var,
+                           value=value).pack(side='left')
+        tk.Button(row, text='등록', command=self.add).pack(side='right')
+        self.query.focus_set()
+
+    def _idle_status(self) -> str:
+        if self.source is None:
+            return '검색이 꺼져 있습니다. 아래에 직접 입력해 등록하세요.'
+        return 'ISBN 또는 제목으로 검색하세요.'
+
+    @staticmethod
+    def _row(parent: tk.Frame, label: str, row: int) -> tk.Entry:
+        tk.Label(parent, text=label, width=6, anchor='w').grid(row=row, column=0, sticky='w')
+        entry = tk.Entry(parent)
+        entry.grid(row=row, column=1, sticky='ew', pady=1)
+        parent.columnconfigure(1, weight=1)
+        return entry
+
+    def search(self) -> None:
+        """검색은 네트워크다. 결과가 없어도 수동 입력은 그대로 열려 있다."""
+        from ..services.catalog import search_books
+
+        text = self.query.get().strip()
+        if not text:
+            return
+        self.listbox.delete(0, 'end')
+        self.results = search_books(self.source, text, limit=20)
+        if not self.results:
+            self.status.config(
+                text='찾지 못했습니다. 아래에 직접 입력해 등록하세요.'
+                if self.source else self._idle_status())
+            self.title_entry.delete(0, 'end')
+            self.title_entry.insert(0, text)
+            return
+        self.status.config(text=f'{len(self.results)}건. 고르면 아래가 채워집니다.')
+        for record in self.results:
+            self.listbox.insert('end', record.display_name)
+
+    def _fill_from_result(self) -> None:
+        picked = self.listbox.curselection()
+        if not picked:
+            return
+        record = self.results[picked[0]]
+        for entry, value in ((self.title_entry, record.title),
+                             (self.author_entry, record.author),
+                             (self.publisher_entry, record.publisher or ''),
+                             (self.isbn_entry, record.isbn13 or '')):
+            entry.delete(0, 'end')
+            entry.insert(0, value)
+
+    def add(self) -> None:
+        title = self.title_entry.get().strip()
+        if not title:
+            messagebox.showinfo('책 읽는 달팽이', '제목을 입력하세요.', parent=self.top)
+            return
+        # 창을 부수기 **전에** 위젯에서 필요한 것을 모두 꺼낸다.
+        # destroy() 뒤에 읽으면 'invalid command name ...' TclError 가 난다.
+        picked = self.listbox.curselection()
+        source = self.results[picked[0]].source if picked else 'manual'
+        cover_url = self.results[picked[0]].cover_url if picked else None
+        try:
+            book = self.journal.add_book(
+                title, author=self.author_entry.get().strip(),
+                publisher=self.publisher_entry.get().strip() or None,
+                isbn13=self.isbn_entry.get().strip() or None,
+                status=self.status_var.get(), source=source)
+        except ValueError as exc:
+            messagebox.showerror('책 읽는 달팽이', f'등록하지 못했습니다.\n{exc}',
+                                 parent=self.top)
+            return
+        self.top.destroy()
+        # 표지 내려받기는 네트워크다. 호출부가 배경으로 넘긴다.
+        if self.on_added is not None:
+            self.on_added(book.book_id, cover_url)

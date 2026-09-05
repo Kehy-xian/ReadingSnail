@@ -44,9 +44,10 @@ onnxruntime (임베딩 인코딩 전용) / PyInstaller onedir / Inno Setup
 `docs/SPEC.md`가 확정 명세, `docs/PORTING_MAP.md`가 전작에서 가져올 것과
 버릴 것의 목록이다. 작업 전에 둘 다 읽을 것.
 
-**1단계(저장소 계층·스키마·마이그레이션) 완료.** 2단계(펫 창)가 다음이다.
+**1·2단계 완료.** `python -m readingsnail` 로 실제로 뜬다. 3단계(임베딩·발화)가 다음이다.
 
-동작이 검증된 것 — `python3 -m unittest discover -s tests` (57건 통과)
+동작이 검증된 것 — `python -m unittest discover -s tests` (107건 통과)
+GUI 테스트는 tkinter·디스플레이가 없으면 자동으로 건너뛴다.
 
 | 있는 것 | 파일 |
 |---|---|
@@ -59,10 +60,17 @@ onnxruntime (임베딩 인코딩 전용) / PyInstaller onedir / Inno Setup
 | 명언 시드 24건 + 멱등 주입기 | `storage/seeds/quotes_ko.json`, `storage/seed.py` |
 | 데이터 폴더 경로 (전작 포함) | `paths.py` |
 | 4갈래 발화 가중치 | `services/dialogue.py` |
+| 8방향 이동 (순수 로직) | `pet/behavior.py` |
+| 달팽이 창 (단일 클래스) | `pet/window.py` |
+| 기록·서재 창 (임시) | `pet/panels.py` |
+| 실행 진입점 | `__main__.py` |
 | 폰트·색 상수 | `theme.py` |
 
-비어 있는 것 — `pet/`(창·스프라이트·이동), `nlp/`(인코더), `services/`의 나머지,
-실행 진입점, 빌드 스펙. `docs/PORTING_MAP.md`대로 전작에서 가져와 채운다.
+비어 있는 것 — `nlp/`(인코더), 의미 검색·발화 서비스, 스프라이트 파이프라인,
+서지 API, 책장 뷰, 빌드 스펙. `docs/PORTING_MAP.md`대로 전작에서 가져와 채운다.
+
+`pet/panels.py`는 **일부러 꾸미지 않았다.** 기능(1~4) → 디자인(5~6) 순서이므로
+지금 다듬으면 6단계에서 갈아엎을 화면을 다듬게 된다.
 
 ## 저장소 계층 쓰는 법
 
@@ -82,6 +90,13 @@ journal.add_entry('숲으로 간 이유', book_id=book.book_id, kind='quote', pa
 닫는데, 이건 전작의 의도적 설계를 그대로 가져온 것이다 — UI 스레드와 임베딩
 백그라운드 작업이 같은 DB를 보므로 연결을 물고 있으면 안 된다.
 
+## 창을 늘릴 때
+
+**PetWindow 를 상속하지 말 것.** 전작은 pet_window.py 위에 v2~v11 이 한 겹씩
+올라탄 11단계 체인이었다(3,469줄). 메서드 하나를 고치려면 어느 겹에서 덮였는지
+열한 파일을 거슬러야 했다. 기능이 늘면 상속이 아니라 **패널을 별도 모듈로** 뗀다.
+`pet/panels.py`가 그 본보기다.
+
 ## 함정 두 가지
 
 1. **검색은 `storage/search.py`를 거친다.** `entries_fts MATCH`를 직접 부르면
@@ -89,7 +104,12 @@ journal.add_entry('숲으로 간 이유', book_id=book.book_id, kind='quote', pa
 0. **기록 본문을 고치면 임베딩을 반드시 무효화한다.** `Journal.revise_entry()`가
    이미 그렇게 한다. 직접 UPDATE 하면 의미 검색이 옛 문장 기준으로 엉뚱한 기록을
    이어붙인다. FTS 인덱스는 트리거가 알아서 따라오지만 벡터는 아니다.
-2. **`theme.font()`는 tkinter 초기화 이후에만 부른다.** `tkfont.families()`가
+2. **`-transparentcolor`는 Windows 전용이다.** X11·macOS 에서는 `TclError`가 난다.
+   `PetWindow._enable_transparency()`가 알파로 물러나되, 그때는 창이 네모로 보인다.
+   개발을 Windows 밖에서 하면 이 차이를 늘 염두에 둘 것.
+3. **`enable_dpi_awareness()`는 `tk.Tk()`보다 먼저 부른다.** 안 그러면 고DPI
+   화면에서 좌표와 화면 크기가 배율만큼 어긋난다.
+4. **`theme.font()`는 tkinter 초기화 이후에만 부른다.** `tkfont.families()`가
    Tk 인스턴스를 요구한다. 반환된 Font 객체는 모듈 전역에 캐시되므로 Tk root를
    새로 만들면 캐시(`theme._resolved`)도 비워야 한다.
 

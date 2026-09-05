@@ -14,7 +14,7 @@
 | `services/data_transfer.py`, `version_backup.py` | 백업·이전·버전 전환 |
 | `pet_sprite.py`, `pet_art.py`, `art_override_store.py`, `sprite_validation.py` | 스프라이트 파이프라인 |
 | `tools/validate_sprite_pack.py`, `install_sprite_override.py` | 원화 교체 도구 |
-| `pet_behavior.py` | 배회·충돌·드래그 |
+| ~~`pet_behavior.py`~~ | **완료.** `pet/behavior.py` — 8방향·수직 절반 속도로 고쳐 가져옴 |
 | `services/single_instance.py`, `windows_autostart.py`, `update_check.py`, `update_install.py` | 운영 인프라 |
 | `BookEater.spec`, `installer/BookEater.iss` | 빌드·설치 (모델 경로만 수정) |
 
@@ -22,7 +22,7 @@
 
 | 전작 | 변경 |
 |---|---|
-| `pet_window.py` + `pet_window_v2`~`v11` | **10단계 상속 체인을 단일 파일로 평탄화.** 여기가 최대 기술부채 |
+| ~~`pet_window.py` + `pet_window_v2`~`v11`~~ | **완료.** 11단계 3,469줄 → `pet/window.py` 단일 클래스 |
 | `services/dialogue.py` | 진화 노선 기반 → 4갈래 가중치 (`services/dialogue.py` 참조) |
 | `services/catalog.py` + `cloudflare/src/index.ts` | 알라딘 → 국립중앙도서관. Worker의 `searchBooks()` 하나만 교체하면 된다 |
 | `ci/e5_targeted_validation.py`의 `E5` 클래스 | `src/readingsnail/nlp/encoder.py`로 승격. **인코더만** 쓴다 |

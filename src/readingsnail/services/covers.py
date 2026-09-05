@@ -18,9 +18,9 @@ import uuid
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
-from urllib.request import Request, urlopen
+from urllib.request import Request
 
-from .catalog.base import TIMEOUT_SEC, USER_AGENT
+from .catalog.base import TIMEOUT_SEC, USER_AGENT, is_private_host, safe_opener
 
 MAX_COVER_BYTES = 4 * 1024 * 1024
 
@@ -65,6 +65,9 @@ def download_cover(url: str, data_dir: str | Path, *, opener=None) -> Path:
         raise CoverError('표지 주소가 올바르지 않다')
     if parsed.username or parsed.password:
         raise CoverError('주소에 자격증명이 들어 있다')
+    # 표지 주소는 외부 서비스 응답에서 온다. 내부망을 대신 두드리게 두지 않는다.
+    if is_private_host(parsed.hostname or ''):
+        raise CoverError('표지 주소가 내부망을 가리킨다')
 
     folder = covers_dir(data_dir)
     stem = hashlib.sha256(address.encode('utf-8')).hexdigest()[:24]
@@ -74,7 +77,7 @@ def download_cover(url: str, data_dir: str | Path, *, opener=None) -> Path:
     request = Request(address, headers={'User-Agent': USER_AGENT,
                                         'Accept': 'image/*'})
     try:
-        open_url = opener or urlopen
+        open_url = opener or safe_opener()
         with open_url(request, timeout=TIMEOUT_SEC) as response:
             data = response.read(MAX_COVER_BYTES + 1)
     except HTTPError as exc:

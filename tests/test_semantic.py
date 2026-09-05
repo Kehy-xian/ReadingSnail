@@ -406,3 +406,66 @@ class QuoteRepetition(Base):
             if spoken:
                 said.append(spoken.utterance.ref_id)
         self.assertEqual(len(said), len(set(said)), f'같은 명언을 다시 꺼냈다: {said}')
+
+
+class WorkerTermination(Base):
+    """진전이 없으면 멈춰야 한다.
+
+    drain_once 가 아무것도 못 썼는데 True 를 돌려주면 같은 배치를 영원히 다시
+    집어와 CPU 를 태운다(실측 2초에 26만 회).
+    """
+
+    def test_인코더가_이상한_값을_주면_멈춘다(self):
+        class BadEncoder:
+            MODEL_ID = 'bad'
+
+            def encode(self, texts, *, kind='passage'):
+                return [['숫자가 아님'] * 8 for _ in texts]
+
+        worker = EmbeddingWorker(self.journal, BadEncoder(), model='bad')
+        self.journal.add_entry('기록 하나')
+        rounds = 0
+        while worker.drain_once() and rounds < 100:
+            rounds += 1
+        self.assertLess(rounds, 5, '진전 없이 계속 돌았다')
+        self.assertEqual(self.journal.count_entries(), 1, '기록이 사라졌다')
+        self.assertGreater(worker.failed, 0)
+        self.assertEqual(worker.pending, 1, '대기열에는 남아 다음에 다시 시도한다')
+
+    def test_스레드로_돌려도_CPU를_태우지_않는다(self):
+        import time
+
+        class BadEncoder:
+            MODEL_ID = 'bad'
+            calls = 0
+
+            def encode(self, texts, *, kind='passage'):
+                BadEncoder.calls += 1
+                return [['숫자가 아님'] * 8 for _ in texts]
+
+        worker = EmbeddingWorker(self.journal, BadEncoder(), model='bad')
+        self.journal.add_entry('기록')
+        worker.start()
+        time.sleep(0.3)
+        worker.stop()
+        self.assertLess(BadEncoder.calls, 20, f'0.3초에 {BadEncoder.calls}회 돌았다')
+
+    def test_일부만_실패해도_나머지는_들어간다(self):
+        class Flaky:
+            MODEL_ID = FAKE_MODEL
+
+            def encode(self, texts, *, kind='passage'):
+                good = FakeEncoder().encode(texts, kind=kind)
+                return [(['숫자가 아님'] * 8) if '불량' in t else v
+                        for t, v in zip(texts, good)]
+
+        for i in range(4):
+            self.journal.add_entry(f'정상 기록 {i}')
+        self.journal.add_entry('불량 기록')
+        worker = EmbeddingWorker(self.journal, Flaky(), model=FAKE_MODEL)
+        rounds = 0
+        while worker.drain_once() and rounds < 20:
+            rounds += 1
+        self.assertEqual(worker.encoded, 4)
+        self.assertEqual(worker.pending, 1)
+        self.assertLess(rounds, 20)

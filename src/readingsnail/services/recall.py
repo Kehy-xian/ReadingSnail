@@ -42,6 +42,9 @@ def similar_entry(
     """방금 저장된 기록과 가장 비슷한 과거 기록.
 
     UI 스레드에서 부르지 말 것. 기록 5,000건 기준 0.3초쯤 걸린다.
+
+    scan_limit 보다 오래된 기록은 후보에서 빠진다. 최신순으로 훑기 때문이다.
+    기록이 그보다 많이 쌓이면 이 값을 올리거나, 벡터 색인을 따로 두어야 한다.
     """
     source = journal.get_entry(source_entry_id)
     if source is None or not source.has_embedding:

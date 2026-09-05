@@ -104,19 +104,30 @@ class EmbeddingWorker:
             self.failed += len(batch)
             return False
 
+        written = 0
         for entry_id, values in zip(ids, rows):
             try:
                 self.journal.set_embedding(entry_id, vectors.pack(values), self.model)
-            except (KeyError, ValueError):
-                # 그 사이에 지워진 기록. 넘어간다.
+            except KeyError:
+                # 그 사이에 지워진 기록. 대기열에서도 빠지므로 넘어가도 된다.
                 continue
+            except (ValueError, TypeError):
+                # 인코더가 이상한 값을 돌려줬다. 이 기록은 계속 대기열에 남으므로
+                # 진전으로 세면 안 된다.
+                self.failed += 1
+                continue
+            written += 1
             self.encoded += 1
             if self.on_done is not None:
                 try:
                     self.on_done(entry_id)
                 except Exception:
                     pass
-        return True
+
+        # **한 건도 못 썼으면 멈춘다.** True 를 돌려주면 같은 배치를 영원히 다시
+        # 집어와 CPU 를 태운다(실측 2초에 26만 회). 대기열은 그대로 남고,
+        # 다음 wake() 때 다시 시도한다.
+        return written > 0
 
 
 def _default_model() -> str:

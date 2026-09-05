@@ -418,3 +418,49 @@ class MalformedResponses(unittest.TestCase):
             self.assertTrue(url.startswith(nlk.ENDPOINT + '?'))
             self.assertNotIn(' ', url)
             self.assertNotIn('\n', url)
+
+
+class NetworkHardening(unittest.TestCase):
+    """서지·표지 응답은 외부에서 온다. 그대로 믿지 않는다."""
+
+    def test_https에서_http로의_리다이렉트를_따르지_않는다(self):
+        """국중 API 는 인증키를 질의 문자열로 보낸다.
+        강등된 리다이렉트 한 번이면 키가 평문으로 나간다."""
+        handler = base._NoDowngradeRedirect()
+        from urllib.request import Request
+        secure = Request('https://nl.go.kr/x?cert_key=SECRET')
+        with self.assertRaises(base.CatalogError):
+            handler.redirect_request(secure, None, 302, 'Found', {},
+                                     'http://evil.example/x?cert_key=SECRET')
+
+    def test_https끼리는_따라간다(self):
+        from urllib.request import Request
+        handler = base._NoDowngradeRedirect()
+        secure = Request('https://nl.go.kr/x')
+        result = handler.redirect_request(secure, None, 302, 'Found', {},
+                                          'https://nl.go.kr/y')
+        self.assertIsNotNone(result)
+
+    def test_내부망_주소를_알아본다(self):
+        for private in ('127.0.0.1', 'localhost', '169.254.169.254',
+                        '10.0.0.5', '192.168.1.1', '::1', ''):
+            self.assertTrue(base.is_private_host(private), private)
+        for public in ('8.8.8.8', 'www.nl.go.kr', '1.1.1.1'):
+            self.assertFalse(base.is_private_host(public), public)
+
+    def test_표지가_내부망을_두드리지_못한다(self):
+        """표지 주소는 외부 서비스 응답에서 온다. 클라우드 메타데이터 주소가
+        섞여 오면 앱이 대신 두드려 주는 통로가 된다."""
+        with TemporaryDirectory() as tmp:
+            for bad in ('http://127.0.0.1/c.png',
+                        'http://169.254.169.254/latest/meta-data/',
+                        'http://localhost:8080/c.png',
+                        'http://10.0.0.5/c.png'):
+                with self.assertRaises(CoverError, msg=bad):
+                    download_cover(bad, Path(tmp), opener=responder(PNG))
+
+    def test_정상_외부_주소는_통과한다(self):
+        with TemporaryDirectory() as tmp:
+            path = download_cover('https://images.example.org/c.png', Path(tmp),
+                                  opener=responder(PNG))
+            self.assertTrue(path.is_file())

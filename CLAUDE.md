@@ -47,7 +47,7 @@ onnxruntime (임베딩 인코딩 전용) / PyInstaller onedir / Inno Setup
 **1~4단계 완료.** `python -m readingsnail` 로 뜨고, 책을 검색해 등록하고, 기록을
 남기면 잠시 뒤 달팽이가 비슷한 옛 기록을 꺼낸다. 5단계(스프라이트)가 다음이다.
 
-동작이 검증된 것 — `python -m unittest discover -s tests` (207건 통과)
+동작이 검증된 것 — `python -m unittest discover -s tests` (218건 통과)
 GUI 테스트는 tkinter·디스플레이가 없으면 자동으로 건너뛴다.
 
 | 있는 것 | 파일 |
@@ -116,6 +116,12 @@ journal.add_entry('숲으로 간 이유', book_id=book.book_id, kind='quote', pa
     되면 안 된다. `search_books()` 가 예외를 밖으로 던지지 않는 이유다.
   · 표지는 내려받아 로컬에 둔다. **외부 URL 을 DB 에 넣지 않는다.**
     전작이 알라딘 URL 을 박아둔 탓에 이전 때 되살릴 수 없었다.
+  · **응답에 실려 온 주소를 그대로 열지 않는다.** 표지 주소는 외부 서비스가
+    준 값이다. `is_private_host()` 로 내부망·루프백·링크로컬을 막는다.
+    클라우드 메타데이터(169.254.169.254)가 대표적인 표적이다.
+  · **https → http 리다이렉트를 따르지 않는다.** urllib 기본은 강등을 따라가고,
+    국중 API 는 인증키를 질의 문자열로 보내므로 한 번이면 평문으로 샌다.
+    `safe_opener()` 를 쓸 것 — 기본 `urlopen` 을 직접 부르지 않는다.
 
 ## 스레드 규칙
 
@@ -129,6 +135,13 @@ journal.add_entry('숲으로 간 이유', book_id=book.book_id, kind='quote', pa
     쥔 스레드에서 Tk 객체가 회수되어 인터프리터가
     `Tcl_AsyncDelete: async handler deleted by the wrong thread` 로 죽는다.
   · 예약한 `after` 는 `PetWindow._after()` 로 걸고 닫을 때 전부 취소한다.
+  · **네트워크도 배경이다.** 서지 검색은 최대 8초(`TIMEOUT_SEC`) 걸린다. UI
+    스레드에서 부르면 그만큼 창이 통째로 얼어붙는다. `AddBookPanel.search()`
+    처럼 스레드로 넘기고 큐를 `after` 로 확인한다. 표지 내려받기도 같다.
+  · **배경 루프는 진전이 없으면 반드시 멈춘다.** `EmbeddingWorker.drain_once()`
+    가 한 건도 못 썼는데 True 를 돌려주면 같은 배치를 영원히 다시 집어온다
+    (실측 2초에 26만 회). '더 할 일이 있다'가 아니라 '실제로 진전했다'를
+    돌려줄 것.
 
 ## 창을 늘릴 때
 
@@ -171,9 +184,16 @@ journal.add_entry('숲으로 간 이유', book_id=book.book_id, kind='quote', pa
    않게 한다.
 4. 고칠 것이 없으면 그렇게 보고하고 넘어간다.
 
+**한 번 검토했다고 끝이 아니다.** 3·4단계는 각 단계 안에서 이미 점검했는데도,
+나중에 다시 훑자 네 건이 더 나왔다 — 배경 루프 무한 반복(CPU 상시 점유),
+서지 검색의 UI 8초 정지, https→http 강등 리다이렉트, 표지 주소의 내부망 접근.
+같은 코드라도 **다른 각도로** 물어야 나온다.
+
 지금까지 이 방식으로 잡은 것 — 중첩 `write()` 잠금, 구버전 전작 DB 이전 중단,
 붙잡고 있는데도 계속 떨어지던 낙하, Tk root 를 다시 만들면 죽던 폰트 캐시,
-패널에 쓰던 글이 종료 시 사라지던 문제. 전부 테스트는 통과하던 상태였다.
+패널에 쓰던 글이 종료 시 사라지던 문제, 배경 스레드의 `root.after` 호출,
+`Tcl_AsyncDelete` 강제 종료, 창을 부순 뒤 위젯 접근, 표지 동시 다운로드 충돌,
+인증키 유출 경로. **전부 테스트가 통과하던 상태였다.**
 
 ## 작업 순서
 

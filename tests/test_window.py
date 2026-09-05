@@ -534,3 +534,91 @@ class AddBook(unittest.TestCase):
         self.assertEqual(self.journal.count_books(), 0)
         self.assertTrue(shown, '아무 안내도 없이 무시했다')
         panel.top.destroy()
+
+
+@unittest.skipUnless(GUI, REASON)
+class SearchDoesNotFreezeUI(unittest.TestCase):
+    """서지 검색은 네트워크다. UI 스레드에서 부르면 최대 8초 얼어붙는다."""
+
+    def setUp(self) -> None:
+        import os
+        from tempfile import TemporaryDirectory
+        self._tmp = TemporaryDirectory()
+        os.environ['READINGSNAIL_DATA_DIR'] = self._tmp.name
+
+        from readingsnail.paths import default_db_path
+        from readingsnail.pet.window import PetWindow
+        from readingsnail.storage.db import open_database
+        from readingsnail.storage.journal import Journal
+
+        self.db = open_database(default_db_path())
+        self.journal = Journal(self.db)
+        self.pet = PetWindow(start_at=(120, 120))
+
+    def tearDown(self) -> None:
+        import os
+        self.pet.close()
+        self.db.close()
+        os.environ.pop('READINGSNAIL_DATA_DIR', None)
+        self._tmp.cleanup()
+
+    def _slow_source(self, delay: float = 0.8):
+        import io
+        import json
+        import time
+
+        from readingsnail.services.catalog.nlk import NationalLibrarySource
+
+        class Response(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                self.close()
+                return False
+
+        def slow(request, timeout=None):
+            time.sleep(delay)
+            return Response(json.dumps({'docs': [{'TITLE': '월든'}]}).encode())
+
+        return NationalLibrarySource('키', opener=slow)
+
+    def test_검색이_즉시_돌아온다(self):
+        import time
+
+        from readingsnail.pet.panels import AddBookPanel
+        panel = AddBookPanel(self.pet.root, self.journal, source=self._slow_source())
+        panel.query.insert(0, '월든')
+        started = time.time()
+        panel.search()
+        self.assertLess(time.time() - started, 0.2, 'search() 가 UI 를 붙잡았다')
+        self.assertIn('찾는 중', panel.status.cget('text'))
+
+    def test_검색_도는_동안_창이_반응한다(self):
+        import time
+
+        from readingsnail.pet.panels import AddBookPanel
+        panel = AddBookPanel(self.pet.root, self.journal, source=self._slow_source())
+        panel.query.insert(0, '월든')
+        panel.search()
+
+        lags, last = [], time.time()
+        deadline = time.time() + 1.6
+        while time.time() < deadline:
+            self.pet.root.update()
+            now = time.time()
+            lags.append(now - last)
+            last = now
+            time.sleep(0.005)
+        self.assertLess(max(lags), 0.3, f'창이 {max(lags):.2f}초 멈췄다')
+        self.assertEqual([panel.listbox.get(i) for i in range(panel.listbox.size())],
+                         ['월든'])
+
+    def test_연타해도_요청이_겹치지_않는다(self):
+        from readingsnail.pet.panels import AddBookPanel
+        panel = AddBookPanel(self.pet.root, self.journal, source=self._slow_source(0.4))
+        panel.query.insert(0, '월든')
+        for _ in range(5):
+            panel.search()
+        self.assertTrue(panel._searching)
+        self.assertLessEqual(panel._found.qsize(), 1)

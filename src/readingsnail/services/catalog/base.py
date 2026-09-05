@@ -13,13 +13,15 @@
 
 from __future__ import annotations
 
+import ipaddress
 import json
 import re
+import socket
 from dataclasses import dataclass
 from typing import Protocol
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 USER_AGENT = 'ReadingSnail/0.0.1 (+local desktop app)'
 TIMEOUT_SEC = 8.0
@@ -110,12 +112,68 @@ def validate_endpoint(url: str) -> str:
     return value.rstrip('/')
 
 
+class _NoDowngradeRedirect(HTTPRedirectHandler):
+    """https → http 강등을 막는다.
+
+    urllib 은 기본적으로 강등을 따라간다. 국중 API 는 인증키를 질의 문자열로
+    보내므로, 강등된 리다이렉트 한 번이면 키가 평문으로 나간다.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if req.full_url.lower().startswith('https://') and \
+                not newurl.lower().startswith('https://'):
+            raise CatalogError('https 에서 http 로의 리다이렉트는 따르지 않는다')
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def safe_opener():
+    """강등 리다이렉트를 막는 opener. 기본 urlopen 대신 쓴다."""
+    return build_opener(_NoDowngradeRedirect()).open
+
+
+def is_private_host(host: str) -> bool:
+    """내부망·루프백·링크로컬을 가리키는가.
+
+    표지 주소는 외부 서비스 응답에서 온다. 그대로 받아 열면 앱이 사용자
+    컴퓨터의 내부 주소를 대신 두드려 주는 통로가 된다(클라우드 메타데이터
+    169.254.169.254 가 대표적이다).
+    """
+    name = str(host or '').strip().strip('[]').lower()
+    if not name:
+        return True
+    if name in {'localhost', 'localhost.localdomain'} or name.endswith('.localhost'):
+        return True
+
+    candidates: list[str] = []
+    try:
+        ipaddress.ip_address(name)
+        candidates.append(name)
+    except ValueError:
+        try:
+            infos = socket.getaddrinfo(name, None)
+        except (socket.gaierror, UnicodeError, OSError):
+            # 이름을 풀지 못했다. 여기서 막으면 정상 주소까지 막힌다.
+            return False
+        candidates = [info[4][0] for info in infos]
+
+    for raw in candidates:
+        try:
+            address = ipaddress.ip_address(raw.split('%')[0])
+        except ValueError:
+            return True
+        if (address.is_private or address.is_loopback or address.is_link_local
+                or address.is_reserved or address.is_multicast
+                or address.is_unspecified):
+            return True
+    return False
+
+
 def fetch_json(url: str, *, opener=None) -> dict:
     """JSON 을 받아온다. 응답 크기를 자른다 — 서버가 무엇을 보낼지 모른다."""
     request = Request(url, headers={'User-Agent': USER_AGENT,
                                     'Accept': 'application/json'})
     try:
-        open_url = opener or urlopen
+        open_url = opener or safe_opener()
         with open_url(request, timeout=TIMEOUT_SEC) as response:
             raw = response.read(MAX_RESPONSE_BYTES + 1)
     except HTTPError as exc:

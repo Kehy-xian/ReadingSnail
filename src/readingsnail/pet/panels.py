@@ -10,6 +10,8 @@ PetWindow 를 상속해서 패널을 붙이지 않는다. 전작이 그렇게 �
 
 from __future__ import annotations
 
+import queue
+import threading
 import tkinter as tk
 from tkinter import messagebox
 from typing import Callable
@@ -152,6 +154,8 @@ class AddBookPanel:
         self.source = source
         self.on_added = on_added
         self.results: list = []
+        self._found: queue.Queue = queue.Queue()
+        self._searching = False
 
         self.top = tk.Toplevel(parent)
         self.top.title('책 등록')
@@ -202,23 +206,57 @@ class AddBookPanel:
         return entry
 
     def search(self) -> None:
-        """검색은 네트워크다. 결과가 없어도 수동 입력은 그대로 열려 있다."""
-        from ..services.catalog import search_books
+        """검색은 네트워크다. **배경 스레드로 넘긴다.**
 
+        UI 스레드에서 부르면 응답이 늦는 만큼(최대 TIMEOUT_SEC = 8초) 창이 통째로
+        얼어붙는다. 결과는 큐에 담고 UI 스레드가 _poll_search 로 꺼낸다
+        (CLAUDE.md 스레드 규칙).
+        """
         text = self.query.get().strip()
         if not text:
             return
+        if self._searching:
+            return                      # 연타해도 요청이 겹치지 않는다
         self.listbox.delete(0, 'end')
-        self.results = search_books(self.source, text, limit=20)
-        if not self.results:
+        self.results = []
+        if self.source is None:
+            self._show_results(text, [])
+            return
+
+        self._searching = True
+        self.status.config(text='찾는 중…')
+        threading.Thread(target=self._search_in_background, args=(text,),
+                         name='catalog-search', daemon=True).start()
+        self._poll_search()
+
+    def _search_in_background(self, text: str) -> None:
+        """배경 스레드. Tk 를 건드리지 않고 큐에만 넣는다."""
+        from ..services.catalog import search_books
+        self._found.put((text, search_books(self.source, text, limit=20)))
+
+    def _poll_search(self) -> None:
+        """UI 스레드. 큐를 확인하고 결과가 오면 그린다."""
+        try:
+            text, records = self._found.get_nowait()
+        except queue.Empty:
+            if self._searching and self.top.winfo_exists():
+                self.top.after(120, self._poll_search)
+            return
+        self._searching = False
+        if self.top.winfo_exists():
+            self._show_results(text, records)
+
+    def _show_results(self, text: str, records: list) -> None:
+        self.results = records
+        if not records:
             self.status.config(
                 text='찾지 못했습니다. 아래에 직접 입력해 등록하세요.'
                 if self.source else self._idle_status())
             self.title_entry.delete(0, 'end')
             self.title_entry.insert(0, text)
             return
-        self.status.config(text=f'{len(self.results)}건. 고르면 아래가 채워집니다.')
-        for record in self.results:
+        self.status.config(text=f'{len(records)}건. 고르면 아래가 채워집니다.')
+        for record in records:
             self.listbox.insert('end', record.display_name)
 
     def _fill_from_result(self) -> None:

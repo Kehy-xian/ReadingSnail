@@ -117,6 +117,9 @@ class PetWindow:
         self._paused = False        # 메뉴·패널이 열려 있으면 멈춘다
         self._closed = False
         self._bubble: str | None = None
+        # 창을 닫기 전에 불러줄 것들. 패널이 쓰던 글을 초안으로 남길 기회다.
+        # root.destroy() 는 자식 Toplevel 을 그냥 없애버리므로 이게 없으면 글이 사라진다.
+        self._closers: list[Callable[[], None]] = []
 
         self.canvas.bind('<ButtonPress-1>', self._drag_start)
         self.canvas.bind('<B1-Motion>', self._drag_move)
@@ -298,7 +301,8 @@ class PetWindow:
                                width=max(1, 1.5 * s))
         if state == 'sleep':
             zx, zy = px(120, base_y - 86)
-            c.create_text(zx, zy, text='z z', fill=PALETTE['ink_soft'], font=font('caption'))
+            c.create_text(zx, zy, text='z z', fill=PALETTE['ink_soft'],
+                          font=font('caption', master=self.root))
 
         if self._bubble:
             self._draw_bubble(c, s)
@@ -308,7 +312,8 @@ class PetWindow:
         text = self._bubble if len(self._bubble) <= 40 else self._bubble[:39] + '…'
         pad = 8 * s
         item = c.create_text(self.size / 2, 22 * s, text=text, width=self.size - 4 * pad,
-                             fill=PALETTE['ink'], font=font('bubble'), justify='center')
+                             fill=PALETTE['ink'], font=font('bubble', master=self.root),
+                             justify='center')
         x0, y0, x1, y1 = c.bbox(item)
         c.create_rectangle(x0 - pad, y0 - pad, x1 + pad, y1 + pad,
                            fill=PALETTE['paper'], outline=PALETTE['line'],
@@ -321,10 +326,25 @@ class PetWindow:
         self._draw_loop()
         self.root.mainloop()
 
+    def register_closer(self, closer: Callable[[], None]) -> None:
+        """창이 닫히기 전에 불릴 정리 함수. 패널이 자기 초안을 저장할 기회다."""
+        self._closers.append(closer)
+
+    def unregister_closer(self, closer: Callable[[], None]) -> None:
+        if closer in self._closers:
+            self._closers.remove(closer)
+
     def close(self) -> None:
         if self._closed:
             return
         self._closed = True
+        # 패널 먼저. 하나가 터져도 나머지는 저장 기회를 얻어야 한다.
+        for closer in list(self._closers):
+            try:
+                closer()
+            except Exception:
+                pass
+        self._closers.clear()
         self._call(self.on_quit)
         try:
             self.root.destroy()

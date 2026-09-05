@@ -147,9 +147,13 @@ class RoamPlanner:
         x, y = self.clamp(motion.x, motion.y, area)
         motion = replace(motion, x=x, y=y)
 
+        # blocked 를 먼저 본다. 낙하 판정이 앞에 있으면 사용자가 떨어지는 달팽이를
+        # 붙잡아도 손 안에서 계속 떨어진다.
+        if blocked:
+            return motion
         if motion.state == 'drop':
             return self._fall(motion, area)
-        if blocked or motion.state in INTERRUPT_STATES:
+        if motion.state in INTERRUPT_STATES:
             return motion
         if motion.state == 'walk' and motion.target_x is not None and motion.target_y is not None:
             return self._walk(motion, area)

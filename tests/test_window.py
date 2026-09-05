@@ -191,3 +191,104 @@ class AppBoot(unittest.TestCase):
         from readingsnail.__main__ import DECLINE_KEY, MAX_ASKS
         self.db.set_meta(DECLINE_KEY, str(MAX_ASKS))
         self.assertGreaterEqual(int(self.db.get_meta(DECLINE_KEY)), MAX_ASKS)
+
+
+@unittest.skipUnless(GUI, REASON)
+class FontCacheAcrossRoots(unittest.TestCase):
+    """Tk 이름있는 폰트는 인터프리터마다 따로 산다.
+
+    창 배율을 바꾸느라 root 를 다시 만들면, 캐시된 Font 는 죽은 인터프리터를
+    가리켜 TclError 가 나거나 조용히 다른 폰트로 그려진다.
+    """
+
+    def test_창을_다시_만들어도_폰트가_살아_있다(self):
+        from readingsnail import theme
+        from readingsnail.pet.window import PetWindow
+
+        first = PetWindow(start_at=(50, 50))
+        first.say('첫 창')
+        first.root.update()
+        self.assertIsNotNone(theme.font('bubble', master=first.root).actual('size'))
+        first.close()
+
+        second = PetWindow(start_at=(50, 50))
+        try:
+            second.say('두 번째 창')
+            second.root.update()
+            wanted = theme.font('bubble', master=second.root)
+            texts = [i for i in second.canvas.find_all()
+                     if second.canvas.type(i) == 'text']
+            self.assertTrue(texts)
+            self.assertEqual(second.canvas.itemcget(texts[0], 'font'), str(wanted))
+        finally:
+            second.close()
+
+    def test_초기화_전에_부르면_알려준다(self):
+        from readingsnail import theme
+        self.assertTrue(callable(theme.reset_font_cache))
+
+
+@unittest.skipUnless(GUI, REASON)
+class ClosingWithOpenPanel(unittest.TestCase):
+    """앱을 닫을 때 패널에 쓰던 글을 잃지 않는다."""
+
+    def setUp(self) -> None:
+        import os
+        from tempfile import TemporaryDirectory
+        self._tmp = TemporaryDirectory()
+        os.environ['READINGSNAIL_DATA_DIR'] = self._tmp.name
+
+        from readingsnail.paths import default_db_path
+        from readingsnail.pet.window import PetWindow
+        from readingsnail.storage.db import open_database
+        from readingsnail.storage.drafts import Drafts
+        from readingsnail.storage.journal import Journal
+
+        self.db = open_database(default_db_path())
+        self.journal = Journal(self.db)
+        self.drafts = Drafts(self.db)
+        self.pet = PetWindow(start_at=(120, 120))
+
+    def tearDown(self) -> None:
+        import os
+        self.pet.close()
+        self.db.close()
+        os.environ.pop('READINGSNAIL_DATA_DIR', None)
+        self._tmp.cleanup()
+
+    def _panel(self, text: str):
+        from readingsnail.pet.panels import WritePanel
+        panel = WritePanel(self.pet.root, self.journal, self.drafts, owner=self.pet)
+        panel.text.delete('1.0', 'end')
+        panel.text.insert('1.0', text)
+        return panel
+
+    def test_패널이_열린_채_종료해도_초안이_남는다(self):
+        from readingsnail.storage.drafts import Drafts as D
+        self._panel('앱이 꺼져도 남아야 하는 글')
+        self.pet.close()
+        saved = self.drafts.load(D.key_for_book(None))
+        self.assertIsNotNone(saved, '종료하면서 쓰던 글이 사라졌다')
+        self.assertEqual(saved.body, '앱이 꺼져도 남아야 하는 글')
+
+    def test_패널을_먼저_닫아도_이중_정리가_안전하다(self):
+        from readingsnail.storage.drafts import Drafts as D
+        panel = self._panel('먼저 닫은 글')
+        panel.close()
+        self.pet.close()
+        self.assertEqual(self.drafts.load(D.key_for_book(None)).body, '먼저 닫은 글')
+
+    def test_저장한_뒤_종료하면_초안이_되살아나지_않는다(self):
+        from readingsnail.storage.drafts import Drafts as D
+        panel = self._panel('저장할 글')
+        panel.save()
+        self.pet.close()
+        self.assertIsNone(self.drafts.load(D.key_for_book(None)))
+        self.assertEqual(self.journal.count_entries(), 1)
+
+    def test_패널이_터져도_나머지_정리는_진행된다(self):
+        broken = []
+        self.pet.register_closer(lambda: (_ for _ in ()).throw(RuntimeError('터짐')))
+        self.pet.register_closer(lambda: broken.append('정리됨'))
+        self.pet.close()
+        self.assertEqual(broken, ['정리됨'])

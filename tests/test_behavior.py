@@ -242,3 +242,24 @@ class Determinism(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)
+
+
+class BlockedWhileFalling(unittest.TestCase):
+    """떨어지는 달팽이를 붙잡으면 손 안에서 계속 떨어지면 안 된다."""
+
+    def test_붙잡으면_낙하도_멈춘다(self):
+        p = planner()
+        m = p.release(PetMotion(x=800, y=100), AREA)
+        self.assertEqual(m.state, 'drop')
+        for _ in range(20):
+            m = p.tick(m, AREA, blocked=True)
+        self.assertEqual(m.y, 100)
+
+    def test_놓으면_다시_떨어진다(self):
+        p = planner()
+        m = p.release(PetMotion(x=800, y=100), AREA)
+        for _ in range(5):
+            m = p.tick(m, AREA, blocked=True)
+        for _ in range(5):
+            m = p.tick(m, AREA)
+        self.assertGreater(m.y, 100)

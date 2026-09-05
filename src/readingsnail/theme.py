@@ -10,6 +10,7 @@ BookEater에서는 폰트가 `font=('', 18, 'bold')`처럼 가족명 없이 30�
 
 from __future__ import annotations
 
+import tkinter
 import tkinter.font as tkfont
 
 # ── 폰트 ──────────────────────────────────────────────
@@ -29,28 +30,50 @@ _SIZES = {
     'bubble': 12,   # 달팽이 말풍선
 }
 
-_resolved: dict[str, tkfont.Font] = {}
+# Tk 이름있는 폰트는 **인터프리터마다 따로** 산다. Tk root 를 새로 만들면 옛 Font
+# 객체는 죽은 인터프리터를 가리켜 TclError 가 나거나, 더 나쁘게는 그 이름이 새
+# 인터프리터에 없어 조용히 다른 폰트로 그려진다. 그래서 인터프리터별로 나눠 담는다.
+# (창 배율을 바꾸느라 창을 다시 만드는 경로에서 실제로 걸린다.)
+_resolved: dict[tuple[object, str, bool], tkfont.Font] = {}
 
 
-def _first_available(stack: tuple[str, ...]) -> str:
-    families = set(tkfont.families())
+def reset_font_cache() -> None:
+    """캐시를 비운다. Tk root 를 버리고 새로 만들 때 부른다."""
+    _resolved.clear()
+
+
+def _first_available(stack: tuple[str, ...], master: tkinter.Misc | None) -> str:
+    families = set(tkfont.families(root=master) if master is not None else tkfont.families())
     for name in stack:
         if name in families:
             return name
     return ''
 
 
-def font(role: str = 'body', *, bold: bool = False) -> tkfont.Font:
-    """역할 이름으로 폰트를 얻는다. tkinter 초기화 이후에만 호출할 것."""
-    key = f'{role}:{"b" if bold else "r"}'
-    if key not in _resolved:
-        stack = DISPLAY_STACK if role in ('title', 'heading', 'bubble') else BODY_STACK
-        _resolved[key] = tkfont.Font(
-            family=_first_available(stack),
-            size=_SIZES.get(role, _SIZES['body']),
-            weight='bold' if bold else 'normal',
-        )
-    return _resolved[key]
+def font(role: str = 'body', *, bold: bool = False,
+         master: tkinter.Misc | None = None) -> tkfont.Font:
+    """역할 이름으로 폰트를 얻는다. tkinter 초기화 이후에만 호출할 것.
+
+    master 를 넘기면 그 창의 인터프리터에 만든다. 창이 둘 이상이면 반드시 넘길 것.
+    """
+    root = master if master is not None else tkinter._default_root
+    if root is None:
+        raise RuntimeError('tkinter 초기화 이후에만 theme.font() 를 부를 것')
+    # 키에 인터프리터 객체 자체를 넣는다. id() 를 쓰면 옛 객체가 회수된 뒤
+    # 같은 주소를 새 인터프리터가 물려받아 죽은 폰트를 돌려줄 수 있다.
+    key = (root.tk, role, bold)
+    cached = _resolved.get(key)
+    if cached is not None:
+        return cached
+    stack = DISPLAY_STACK if role in ('title', 'heading', 'bubble') else BODY_STACK
+    created = tkfont.Font(
+        root=root,
+        family=_first_available(stack, root),
+        size=_SIZES.get(role, _SIZES['body']),
+        weight='bold' if bold else 'normal',
+    )
+    _resolved[key] = created
+    return created
 
 
 # ── 색 ────────────────────────────────────────────────

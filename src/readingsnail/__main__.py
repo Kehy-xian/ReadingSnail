@@ -98,7 +98,7 @@ def main(argv: list[str] | None = None) -> int:
 
     def on_write() -> None:
         from .pet.panels import WritePanel
-        WritePanel(pet.root, journal, drafts)
+        WritePanel(pet.root, journal, drafts, owner=pet)
 
     def on_library() -> None:
         from .pet.panels import LibraryPanel

@@ -21,11 +21,16 @@ class WritePanel:
     """기록 한 건을 남긴다. 닫으면 쓰던 글이 초안으로 남는다."""
 
     def __init__(self, parent: tk.Misc, journal: Journal, drafts: Drafts,
-                 *, book_id: str | None = None):
+                 *, book_id: str | None = None, owner: object | None = None):
         self.journal = journal
         self.drafts = drafts
         self.book_id = book_id
         self.draft_key = Drafts.key_for_book(book_id)
+        # 달팽이 창이 닫힐 때 쓰던 글을 초안으로 남기기 위해 등록한다.
+        # 등록하지 않으면 root.destroy() 가 이 창을 그냥 없애 글이 사라진다.
+        self.owner = owner if hasattr(owner, 'register_closer') else None
+        if self.owner is not None:
+            self.owner.register_closer(self._save_draft)
 
         self.top = tk.Toplevel(parent)
         self.top.title('기록 남기기')
@@ -77,13 +82,28 @@ class WritePanel:
             return
         # 저장이 끝났으니 초안은 지운다. 저장 실패 시에는 남겨둬야 글을 잃지 않는다.
         self.drafts.clear(self.draft_key)
+        self._detach()
         self.top.destroy()
+
+    def _save_draft(self) -> None:
+        """쓰던 글을 초안으로. 창이 이미 사라졌으면 조용히 넘어간다."""
+        try:
+            body = self._body()
+        except tk.TclError:
+            return
+        self.drafts.save(self.draft_key, body=body,
+                         book_id=self.book_id, kind=self.kind.get())
 
     def close(self) -> None:
         """닫아도 글을 잃지 않는다. 쓰던 그대로 초안에 남긴다."""
-        self.drafts.save(self.draft_key, body=self._body(),
-                         book_id=self.book_id, kind=self.kind.get())
+        self._save_draft()
+        self._detach()
         self.top.destroy()
+
+    def _detach(self) -> None:
+        if self.owner is not None:
+            self.owner.unregister_closer(self._save_draft)
+            self.owner = None
 
 
 class LibraryPanel:

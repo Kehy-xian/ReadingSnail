@@ -44,23 +44,51 @@ onnxruntime (임베딩 인코딩 전용) / PyInstaller onedir / Inno Setup
 `docs/SPEC.md`가 확정 명세, `docs/PORTING_MAP.md`가 전작에서 가져올 것과
 버릴 것의 목록이다. 작업 전에 둘 다 읽을 것.
 
-동작이 검증된 것 — `python3 -m unittest discover -s tests` (17건 통과)
+**1단계(저장소 계층·스키마·마이그레이션) 완료.** 2단계(펫 창)가 다음이다.
+
+동작이 검증된 것 — `python3 -m unittest discover -s tests` (57건 통과)
 
 | 있는 것 | 파일 |
 |---|---|
 | SQLite 스키마 (trigram FTS5 포함) | `storage/schema.sql` |
+| 연결·스키마 적용 (`Database`) | `storage/db.py` |
+| 책·기록 (`Journal`) | `storage/journal.py` |
+| 임시저장 / 설정 | `storage/drafts.py`, `storage/settings.py` |
+| 전작 기록 이전 | `storage/migrate.py` |
 | 한글 검색 라우터 | `storage/search.py` |
 | 명언 시드 24건 + 멱등 주입기 | `storage/seeds/quotes_ko.json`, `storage/seed.py` |
+| 데이터 폴더 경로 (전작 포함) | `paths.py` |
 | 4갈래 발화 가중치 | `services/dialogue.py` |
 | 폰트·색 상수 | `theme.py` |
 
 비어 있는 것 — `pet/`(창·스프라이트·이동), `nlp/`(인코더), `services/`의 나머지,
 실행 진입점, 빌드 스펙. `docs/PORTING_MAP.md`대로 전작에서 가져와 채운다.
 
+## 저장소 계층 쓰는 법
+
+```python
+from readingsnail.paths import default_db_path
+from readingsnail.storage.db import open_database
+from readingsnail.storage.journal import Journal
+
+db = open_database(default_db_path())   # 스키마 적용 + 명언 시드까지
+journal = Journal(db)
+book = journal.add_book('월든', author='헨리 데이비드 소로')
+journal.add_entry('숲으로 간 이유', book_id=book.book_id, kind='quote', page='p.31')
+```
+
+전작처럼 저장소마다 `_connect()`를 두지 않는다. `Database` 하나가 연결과 스키마를
+맡고 `Journal`·`Drafts`·`Settings`가 그것을 받아 쓴다. 연결은 메서드마다 짧게 열고
+닫는데, 이건 전작의 의도적 설계를 그대로 가져온 것이다 — UI 스레드와 임베딩
+백그라운드 작업이 같은 DB를 보므로 연결을 물고 있으면 안 된다.
+
 ## 함정 두 가지
 
 1. **검색은 `storage/search.py`를 거친다.** `entries_fts MATCH`를 직접 부르면
    trigram 특성상 2자 이하 질의('독서', '기록')가 전부 0건이 된다. 조용히 실패한다.
+0. **기록 본문을 고치면 임베딩을 반드시 무효화한다.** `Journal.revise_entry()`가
+   이미 그렇게 한다. 직접 UPDATE 하면 의미 검색이 옛 문장 기준으로 엉뚱한 기록을
+   이어붙인다. FTS 인덱스는 트리거가 알아서 따라오지만 벡터는 아니다.
 2. **`theme.font()`는 tkinter 초기화 이후에만 부른다.** `tkfont.families()`가
    Tk 인스턴스를 요구한다. 반환된 Font 객체는 모듈 전역에 캐시되므로 Tk root를
    새로 만들면 캐시(`theme._resolved`)도 비워야 한다.

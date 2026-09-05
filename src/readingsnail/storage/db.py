@@ -16,6 +16,7 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
@@ -42,9 +43,13 @@ class Database:
         self.path = str(path)
         if self.path != ':memory:':
             Path(self.path).expanduser().parent.mkdir(parents=True, exist_ok=True)
+        # 열려 있는 쓰기 트랜잭션의 연결을 스레드별로 들고 있는다.
+        # 중첩 write() 와 write() 안의 읽기가 같은 연결을 쓰게 하기 위한 것이다.
+        self._local = threading.local()
         # ':memory:' 는 연결마다 별개의 DB 가 된다. 짧은 연결 방식과 섞이면
         # 테이블이 사라진 것처럼 보이므로, 메모리 DB 는 연결 하나를 붙들고 간다.
         self._shared: sqlite3.Connection | None = None
+        self._shared_lock = threading.RLock()
         if self.path == ':memory:':
             self._shared = self._new_connection()
         if apply_schema:
@@ -52,6 +57,8 @@ class Database:
 
     # ── 연결 ──────────────────────────────────────────
     def _new_connection(self) -> sqlite3.Connection:
+        # check_same_thread=False 는 메모리 DB 의 공유 연결 때문에 필요하다.
+        # 파일 DB 는 호출한 스레드에서 열고 그 스레드에서 닫으므로 공유되지 않는다.
         con = sqlite3.connect(self.path, timeout=5.0, check_same_thread=False)
         con.row_factory = sqlite3.Row
         con.execute('PRAGMA foreign_keys=ON')
@@ -60,9 +67,22 @@ class Database:
             con.execute('PRAGMA journal_mode=WAL')
         return con
 
+    def _open_write(self) -> sqlite3.Connection | None:
+        """이 스레드에서 지금 열려 있는 쓰기 트랜잭션의 연결."""
+        return getattr(self._local, 'con', None)
+
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:
-        """읽기용 짧은 연결. 커밋은 하지 않는다."""
+        """읽기용 짧은 연결. 커밋은 하지 않는다.
+
+        쓰기 트랜잭션 안에서 부르면 그 연결을 그대로 돌려준다. 새 연결을 열면
+        아직 커밋되지 않은 변경이 보이지 않고, 파일 DB 에서는 자기 자신의 쓰기
+        잠금에 걸려 5초를 기다리다 실패한다.
+        """
+        con = self._open_write()
+        if con is not None:
+            yield con
+            return
         if self._shared is not None:
             yield self._shared
             return
@@ -78,20 +98,36 @@ class Database:
 
         BEGIN IMMEDIATE 로 시작해 읽고-쓰는 사이에 다른 쓰기가 끼어들지 못하게 한다.
         전작의 record_note / commit_fed 가 쓰던 방식이다.
+
+        **중첩해도 된다.** 안쪽 write() 는 SAVEPOINT 로 열려 바깥 트랜잭션에 합쳐진다.
+        중첩을 막아두면 `with db.write(): journal.add_entry(...)` 같은 자연스러운
+        호출이 'cannot start a transaction within a transaction' 으로 터진다.
+        파일 DB 였다면 자기 잠금에 걸려 5초 뒤 'database is locked' 가 된다.
         """
-        if self._shared is not None:
-            con = self._shared
+        outer = self._open_write()
+        if outer is not None:
+            depth = getattr(self._local, 'depth', 0)
+            name = f'rs_sp{depth}'
+            self._local.depth = depth + 1
+            outer.execute(f'SAVEPOINT {name}')
             try:
-                con.execute('BEGIN IMMEDIATE')
-                yield con
-                con.commit()
+                yield outer
             except Exception:
-                if con.in_transaction:
-                    con.rollback()
+                outer.execute(f'ROLLBACK TO {name}')
+                outer.execute(f'RELEASE {name}')
                 raise
+            else:
+                outer.execute(f'RELEASE {name}')
+            finally:
+                self._local.depth = depth
             return
 
-        con = self._new_connection()
+        shared = self._shared is not None
+        if shared:
+            self._shared_lock.acquire()
+        con = self._shared if shared else self._new_connection()
+        self._local.con = con
+        self._local.depth = 0
         try:
             con.execute('BEGIN IMMEDIATE')
             yield con
@@ -101,7 +137,11 @@ class Database:
                 con.rollback()
             raise
         finally:
-            con.close()
+            self._local.con = None
+            if shared:
+                self._shared_lock.release()
+            else:
+                con.close()
 
     # ── 스키마 ────────────────────────────────────────
     def apply_schema(self) -> None:

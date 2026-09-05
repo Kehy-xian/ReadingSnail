@@ -20,7 +20,7 @@ from .db import Database
 from .journal import ENTRY_KINDS, utc_now
 
 MAX_DRAFT_CHARS = 200_000
-MAX_PAGE_CHARS = 500
+MAX_BOOK_ID_CHARS = 200
 
 QUICK_KEY = 'quick'
 
@@ -52,7 +52,7 @@ class Drafts:
             self.clear(draft_key)
             return None
 
-        clean_book = str(book_id or '').strip()[:MAX_PAGE_CHARS] or None
+        clean_book = str(book_id or '').strip()[:MAX_BOOK_ID_CHARS] or None
         with self.db.write() as con:
             con.execute(
                 'INSERT INTO drafts(draft_key, book_id, kind, body, updated_at) VALUES (?,?,?,?,?) '

@@ -83,6 +83,24 @@ def _tables(con: sqlite3.Connection) -> set[str]:
             con.execute("SELECT name FROM sqlite_master WHERE type='table'")}
 
 
+def _col(row: sqlite3.Row, name: str, default: object = None) -> object:
+    """없는 컬럼을 조용히 넘긴다.
+
+    전작은 beta.4 하나가 아니다. 그 전 버전 DB 에는 publisher, cover_url, source 가
+    없을 수 있고 그때 sqlite3.Row 는 sqlite3.DatabaseError 가 아니라 IndexError 를
+    던진다. 아래 try/except 가 잡지 못해 이전 전체가 중단됐었다.
+    """
+    try:
+        value = row[name]
+    except (IndexError, KeyError):
+        return default
+    return default if value is None else value
+
+
+def _text(row: sqlite3.Row, name: str, default: str = '') -> str:
+    return str(_col(row, name, default) or default)
+
+
 def _normalize_time(raw: object) -> str:
     """전작은 CURRENT_TIMESTAMP('YYYY-MM-DD HH:MM:SS')를 썼다. 형식이 같으면 그대로 쓴다."""
     text = str(raw or '').strip()
@@ -142,23 +160,31 @@ def migrate(db: Database, legacy_path: str | Path) -> MigrationReport:
 def _migrate_books(src, db, tables, report) -> None:
     if 'books' not in tables:
         return
-    cols = {str(r['name']) for r in src.execute('PRAGMA table_info(books)')}
-    rows = src.execute('SELECT * FROM books').fetchall()
+    try:
+        rows = src.execute('SELECT * FROM books').fetchall()
+    except sqlite3.DatabaseError as exc:
+        report.skipped.append(f'books 테이블을 읽을 수 없다 — {exc}')
+        return
+
     for row in rows:
-        book_id = str(row['book_id'] or '').strip()
-        title = str(row['title'] or '').strip()
+        book_id = _text(row, 'book_id').strip()
+        title = _text(row, 'title').strip()
         if not book_id or not title:
             report.skipped.append(f'book:{book_id or "(id없음)"} — 제목이나 id 가 비었다')
             continue
-        status = str(row['status'] or 'reading')
+        status = _text(row, 'status', 'reading')
         if status not in BOOK_STATUSES:
             status = 'reading'
-        added = _normalize_time(row['created_at'] if 'created_at' in cols else None)
+        added = _normalize_time(_col(row, 'created_at'))
 
-        cover_url = str(row['cover_url'] or '').strip() if 'cover_url' in cols else ''
+        cover_url = _text(row, 'cover_url').strip()
         if cover_url:
             # DB 에 URL 을 넣지 않는다. 나중에 내려받도록 목록만 넘긴다.
             report.covers_to_fetch.append((book_id, title, cover_url))
+
+        finished = None
+        if status == 'completed':
+            finished = _normalize_time(_col(row, 'updated_at') or added)
 
         try:
             with db.write() as con:
@@ -166,14 +192,12 @@ def _migrate_books(src, db, tables, report) -> None:
                     'INSERT OR IGNORE INTO books'
                     '(book_id, title, author, publisher, isbn13, status, source, added_at,'
                     ' started_at, finished_at) VALUES (?,?,?,?,?,?,?,?,?,?)',
-                    (book_id, title, str(row['author'] or ''),
-                     str(row['publisher'] or '').strip() or None,
-                     str(row['isbn13'] or '').strip() or None,
-                     status, str(row['source'] or 'manual') if 'source' in cols else 'manual',
-                     added,
+                    (book_id, title, _text(row, 'author'),
+                     _text(row, 'publisher').strip() or None,
+                     _text(row, 'isbn13').strip() or None,
+                     status, _text(row, 'source', 'manual'), added,
                      added if status in ('reading', 'completed', 'paused') else None,
-                     _normalize_time(row['updated_at']) if status == 'completed'
-                     and 'updated_at' in cols else None),
+                     finished),
                 )
             if cur.rowcount:
                 report.books += 1
@@ -189,20 +213,24 @@ def _migrate_entries(src, db, tables, report) -> None:
             if has_context else '')
     select_ctx = 'c.book_id AS ctx_book, c.progress_text AS ctx_page' if has_context \
         else "NULL AS ctx_book, NULL AS ctx_page"
-    rows = src.execute(
-        f'SELECT e.feed_id, e.note_text, e.created_at, {select_ctx} '
-        f'FROM reading_entries e {join} ORDER BY e.created_at, e.rowid'
-    ).fetchall()
+    try:
+        rows = src.execute(
+            f'SELECT e.feed_id, e.note_text, e.created_at, {select_ctx} '
+            f'FROM reading_entries e {join} ORDER BY e.created_at, e.rowid'
+        ).fetchall()
+    except sqlite3.DatabaseError as exc:
+        # 컬럼 이름이 다르면 여기서 걸린다. 어느 앱의 DB 인지 알 수 없다는 뜻이다.
+        raise MigrationError(f'BookEater 기록 테이블 구조가 예상과 다르다 — {exc}') from exc
 
     for row in rows:
-        entry_id = str(row['feed_id'] or '').strip()
-        body = str(row['note_text'] or '').strip()
+        entry_id = _text(row, 'feed_id').strip()
+        body = _text(row, 'note_text').strip()
         if not entry_id or not body:
             report.skipped.append(f'entry:{entry_id or "(id없음)"} — 본문이 비었다')
             continue
-        book_id = str(row['ctx_book'] or '').strip() or None
-        page = str(row['ctx_page'] or '').strip() or None
-        created = _normalize_time(row['created_at'])
+        book_id = _text(row, 'ctx_book').strip() or None
+        page = _text(row, 'ctx_page').strip() or None
+        created = _normalize_time(_col(row, 'created_at'))
 
         try:
             with db.write() as con:
@@ -226,15 +254,20 @@ def _migrate_entries(src, db, tables, report) -> None:
 def _migrate_settings(src, db, tables, report) -> None:
     if 'app_settings' not in tables:
         return
-    for row in src.execute('SELECT key, value FROM app_settings').fetchall():
-        key = str(row['key'] or '').strip()
+    try:
+        rows = src.execute('SELECT key, value FROM app_settings').fetchall()
+    except sqlite3.DatabaseError as exc:
+        report.skipped.append(f'app_settings 를 읽을 수 없다 — {exc}')
+        return
+    for row in rows:
+        key = _text(row, 'key').strip()
         if not key:
             continue
         try:
             with db.write() as con:
                 cur = con.execute(
                     'INSERT OR IGNORE INTO settings(key, value) VALUES (?,?)',
-                    (key, str(row['value'])),
+                    (key, _text(row, 'value')),
                 )
             if cur.rowcount:
                 report.settings += 1

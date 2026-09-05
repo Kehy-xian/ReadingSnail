@@ -195,6 +195,42 @@ class Migration(unittest.TestCase):
         migrate(self.db, self.legacy)
         self.assertIsNotNone(self.db.get_meta(MIGRATION_MARKER))
 
+    def test_구버전_전작_DB도_이전된다(self):
+        """beta.4 이전 버전에는 publisher / cover_url / source 컬럼이 없다.
+
+        sqlite3.Row 는 없는 컬럼에 IndexError 를 던지는데 이건
+        sqlite3.DatabaseError 가 아니라서 예전 코드는 이전 전체가 중단됐다.
+        """
+        older = self.tmp / 'older.sqlite3'
+        con = sqlite3.connect(older)
+        con.executescript(
+            'CREATE TABLE reading_entries(feed_id TEXT PRIMARY KEY, note_text TEXT NOT NULL,'
+            "  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);"
+            'CREATE TABLE books(book_id TEXT PRIMARY KEY, title TEXT NOT NULL,'
+            "  author TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'reading',"
+            '  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);')
+        con.execute("INSERT INTO books(book_id,title) VALUES('b9','옛 책')")
+        con.execute("INSERT INTO reading_entries(feed_id,note_text) VALUES('f9','옛 기록')")
+        con.commit()
+        con.close()
+
+        report = migrate(self.db, older)
+        self.assertEqual((report.books, report.entries), (1, 1))
+        self.assertEqual(report.skipped, [])
+        self.assertEqual(report.covers_to_fetch, [])
+        self.assertEqual(self.journal.get_entry('f9').body, '옛 기록')
+
+    def test_컬럼_이름이_다르면_거부한다(self):
+        # BookEater 가 아닌 다른 앱의 DB 를 잘못 지목한 경우다.
+        weird = self.tmp / 'weird.sqlite3'
+        con = sqlite3.connect(weird)
+        con.executescript('CREATE TABLE reading_entries(feed_id TEXT PRIMARY KEY, body TEXT)')
+        con.execute("INSERT INTO reading_entries VALUES ('f1','다른 컬럼명')")
+        con.commit()
+        con.close()
+        with self.assertRaises(MigrationError):
+            migrate(self.db, weird)
+
     def test_전작_DB가_아니면_거부한다(self):
         other = self.tmp / 'other.sqlite3'
         sqlite3.connect(other).executescript('CREATE TABLE x(y)')

@@ -187,6 +187,45 @@ class SettingStore(Base):
         self.assertEqual(self.journal.count_entries(), 1)
 
 
+class NestedWrites(Base):
+    """write() 중첩. 막아두면 2단계 UI 코드가 바로 걸린다."""
+
+    def test_쓰기_안에서_저장소_메서드를_불러도_된다(self):
+        with self.db.write():
+            self.journal.add_entry('중첩 안에서 저장')
+        self.assertEqual(self.journal.count_entries(), 1)
+
+    def test_쓰기_안의_읽기는_아직_커밋_안_된_것도_본다(self):
+        with self.db.write():
+            entry = self.journal.add_entry('아직 커밋 전')
+            self.assertIsNotNone(self.journal.get_entry(entry.entry_id))
+
+    def test_안쪽만_실패하면_바깥은_살아남는다(self):
+        with self.db.write() as con:
+            self.journal.add_entry('바깥 기록')
+            try:
+                with self.db.write() as inner:
+                    inner.execute(
+                        "INSERT INTO entries(entry_id,kind,body,created_at) "
+                        "VALUES ('x','note','안쪽 기록',datetime('now'))")
+                    raise RuntimeError('안쪽만 실패')
+            except RuntimeError:
+                pass
+        bodies = [e.body for e in self.journal.recent_entries()]
+        self.assertEqual(bodies, ['바깥 기록'])
+
+    def test_바깥이_실패하면_전부_되돌아간다(self):
+        try:
+            with self.db.write():
+                self.journal.add_entry('바깥')
+                with self.db.write():
+                    self.journal.add_entry('안쪽')
+                raise RuntimeError('바깥 실패')
+        except RuntimeError:
+            pass
+        self.assertEqual(self.journal.count_entries(), 0)
+
+
 class OnDisk(unittest.TestCase):
     """파일 DB 로 열고 닫아도 살아남는지."""
 

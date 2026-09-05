@@ -222,15 +222,17 @@ def main(argv: list[str] | None = None) -> int:
     catalog = build_source(settings)
     data_dir = default_data_dir()
 
-    def on_write() -> None:
+    def on_write(book_id: str | None = None) -> None:
         from .pet.panels import WritePanel
         # 같은 창을 두 번 열면 두 창이 같은 초안을 두고 다툰다. 하나만 띄운다.
         pet.show_once('write', lambda: WritePanel(
-            pet.root, journal, drafts, owner=pet, on_saved=companion.note_saved))
+            pet.root, journal, drafts, book_id=book_id, owner=pet,
+            on_saved=companion.note_saved))
 
     def on_library() -> None:
         from .pet.panels import LibraryPanel
-        pet.show_once('library', lambda: LibraryPanel(pet.root, journal))
+        pet.show_once('library', lambda: LibraryPanel(
+            pet.root, journal, owner=pet, on_write=on_write))
 
     def on_add_book() -> None:
         from .pet.panels import AddBookPanel
@@ -249,7 +251,7 @@ def main(argv: list[str] | None = None) -> int:
         companion.stop()
         db.close()
 
-    pet = PetWindow(on_write=on_write, on_library=on_library,
+    pet = PetWindow(on_write=lambda: on_write(), on_library=on_library,
                     on_add_book=on_add_book, on_quit=on_quit,
                     resource_root=resource_root(), data_dir=data_dir)
     # 소품은 순수 사용자 선택이다 — 해금 개념이 없다(CLAUDE.md).

@@ -1,11 +1,15 @@
-"""기록 창과 서재 창.
-
-**의도적으로 꾸미지 않았다.** 개발 순서가 기능(1~4) → 디자인(5~6)이다.
-지금 다듬으면 6단계에서 어차피 갈아엎을 화면을 다듬게 된다. 여기서는
-저장소 계층이 UI 에 제대로 붙는지만 확인한다.
+"""기록·서재·책 등록 창. (6-b 재배치판)
 
 PetWindow 를 상속해서 패널을 붙이지 않는다. 전작이 그렇게 하다 11겹이 됐다.
 패널은 이렇게 각자 Toplevel 을 들고 산다.
+
+지키는 것
+    · 색과 폰트는 `styling.apply()` 를 거친다. 값을 여기 박아넣지 않는다.
+    · Tk 변수와 예약한 after 는 `<Destroy>` 에서 거둔다. owner 등록만 믿으면
+      owner 없이 만든 패널이 자원을 남긴다.
+    · 네트워크는 배경 스레드로. UI 를 최대 8초 얼리지 않는다.
+    · **글을 잃지 않는다.** 저장에 실패하면 초안을 지우지 않고, 창이 어떤 경로로
+      사라지든 쓰던 글은 초안으로 남는다.
 """
 
 from __future__ import annotations
@@ -13,72 +17,157 @@ from __future__ import annotations
 import queue
 import threading
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import messagebox, ttk
 from typing import Callable
 
-from ..storage.drafts import Drafts
-from ..storage.journal import Journal
+from ..theme import PAD_L, PAD_M, PAD_S, PALETTE
+from .styling import apply as apply_style
+from .styling import text_defaults
+
+BOOK_NONE = '(책 없이)'
+STATUS_LABELS = (('읽는 중', 'reading'), ('읽고 싶은', 'wishlist'),
+                 ('다 읽음', 'completed'), ('잠시 멈춤', 'paused'))
+STATUS_KO = {value: label for label, value in STATUS_LABELS}
 
 
-class WritePanel:
+class _Panel:
+    """모든 패널이 공유하는 뼈대. 상속은 여기까지만 — 한 겹이다."""
+
+    title = '책 읽는 달팽이'
+    size = '520x420'
+
+    def __init__(self, parent: tk.Misc, *, owner: object | None = None):
+        self.top = tk.Toplevel(parent)
+        self.top.title(self.title)
+        self.top.geometry(self.size)
+        self.top.configure(bg=PALETTE['paper'])
+        self.style = apply_style(self.top)
+        self._disposed = False
+        self.owner = owner if hasattr(owner, 'register_closer') else None
+        self.top.bind('<Destroy>', self._on_destroy)
+        self.top.bind('<Escape>', lambda _e: self.close())
+
+    def _on_destroy(self, event: tk.Event) -> None:
+        if event.widget is self.top:
+            self.dispose()
+
+    def dispose(self) -> None:
+        """Tk 자원을 놓아준다. 여러 번 불러도 안전하다."""
+        if self._disposed:
+            return
+        self._disposed = True
+        self._cleanup()
+        if self.owner is not None:
+            self.owner.unregister_closer(self.dispose)
+            self.owner = None
+
+    def _cleanup(self) -> None:
+        """하위 클래스가 자기 자원을 거둔다."""
+
+    def close(self) -> None:
+        self.dispose()
+        try:
+            self.top.destroy()
+        except tk.TclError:
+            pass
+
+
+class WritePanel(_Panel):
     """기록 한 건을 남긴다. 닫으면 쓰던 글이 초안으로 남는다."""
 
-    def __init__(self, parent: tk.Misc, journal: Journal, drafts: Drafts,
-                 *, book_id: str | None = None, owner: object | None = None,
+    title = '기록 남기기'
+    size = '560x460'
+
+    def __init__(self, parent: tk.Misc, journal, drafts, *,
+                 book_id: str | None = None, owner: object | None = None,
                  on_saved: Callable[[], None] | None = None):
+        super().__init__(parent, owner=owner)
         self.journal = journal
         self.drafts = drafts
         self.book_id = book_id
-        self.draft_key = Drafts.key_for_book(book_id)
         self.on_saved = on_saved
-        # 달팽이 창이 닫힐 때 쓰던 글을 초안으로 남기기 위해 등록한다.
-        # 등록하지 않으면 root.destroy() 가 이 창을 그냥 없애 글이 사라진다.
-        self.owner = owner if hasattr(owner, 'register_closer') else None
+        self.draft_key = drafts.key_for_book(book_id)
+        # 저장을 끝내고 닫는 경우에는 초안을 다시 쓰지 않는다.
+        # 안 그러면 방금 지운 초안이 되살아난다.
+        self._submitted = False
         if self.owner is not None:
             self.owner.register_closer(self._save_draft)
 
-        self.top = tk.Toplevel(parent)
-        self.top.title('기록 남기기')
-        self.top.geometry('460x340')
-
         self.kind = tk.StringVar(value='note')
-        row = tk.Frame(self.top)
-        row.pack(fill='x', padx=10, pady=(10, 4))
-        tk.Radiobutton(row, text='내 생각', variable=self.kind, value='note').pack(side='left')
-        tk.Radiobutton(row, text='필사한 문장', variable=self.kind, value='quote').pack(side='left')
-        tk.Label(row, text='쪽').pack(side='left', padx=(12, 4))
-        self.page = tk.Entry(row, width=8)
-        self.page.pack(side='left')
+        self.book_choice = tk.StringVar(value=BOOK_NONE)
 
-        self.books = {b.display_name: b.book_id for b in journal.list_books()}
-        self.book_choice = tk.StringVar(value='(책 없이)')
-        tk.OptionMenu(self.top, self.book_choice,
-                      '(책 없이)', *self.books).pack(fill='x', padx=10)
+        outer = ttk.Frame(self.top, padding=PAD_M)
+        outer.pack(fill='both', expand=True)
 
-        self.text = tk.Text(self.top, wrap='word', height=10)
-        self.text.pack(fill='both', expand=True, padx=10, pady=8)
+        # 어느 책의, 어떤 종류의 기록인가
+        head = ttk.Frame(outer)
+        head.pack(fill='x', pady=(0, PAD_S))
+        ttk.Label(head, text='책').pack(side='left')
+        self.books = {b.display_name: b.book_id for b in journal.list_books(limit=200)}
+        self.book_box = ttk.Combobox(head, textvariable=self.book_choice, state='readonly',
+                                     values=[BOOK_NONE, *self.books])
+        self.book_box.pack(side='left', fill='x', expand=True, padx=(PAD_S, PAD_M))
+        if book_id:
+            for name, ident in self.books.items():
+                if ident == book_id:
+                    self.book_choice.set(name)
+                    break
+
+        ttk.Label(head, text='쪽').pack(side='left')
+        self.page = ttk.Entry(head, width=8)
+        self.page.pack(side='left', padx=(PAD_S, 0))
+
+        kinds = ttk.Frame(outer)
+        kinds.pack(fill='x', pady=(0, PAD_S))
+        ttk.Radiobutton(kinds, text='내 생각', variable=self.kind,
+                        value='note').pack(side='left')
+        ttk.Radiobutton(kinds, text='필사한 문장', variable=self.kind,
+                        value='quote').pack(side='left', padx=(PAD_M, 0))
+        self.counter = ttk.Label(kinds, text='0자', style='Muted.TLabel')
+        self.counter.pack(side='right')
+
+        self.text = tk.Text(self.top, wrap='word', height=12, undo=True,
+                            **text_defaults(self.top))
+        self.text.pack(in_=outer, fill='both', expand=True)
+        self.text.bind('<KeyRelease>', lambda _e: self._count())
+        self.text.bind('<Control-Return>', lambda _e: (self.save(), 'break')[1])
+
+        buttons = ttk.Frame(outer)
+        buttons.pack(fill='x', pady=(PAD_M, 0))
+        ttk.Label(buttons, text='Ctrl+Enter 로 저장 · Esc 로 닫기',
+                  style='Muted.TLabel').pack(side='left')
+        ttk.Button(buttons, text='저장', style='Accent.TButton',
+                   command=self.save).pack(side='right')
+        ttk.Button(buttons, text='닫기', command=self.close).pack(side='right',
+                                                                 padx=(0, PAD_S))
+        self.top.protocol('WM_DELETE_WINDOW', self.close)
 
         saved = drafts.load(self.draft_key)
         if saved:
             self.text.insert('1.0', saved.body)
             self.kind.set(saved.kind)
-
-        buttons = tk.Frame(self.top)
-        buttons.pack(fill='x', padx=10, pady=(0, 10))
-        tk.Button(buttons, text='저장', command=self.save).pack(side='right')
-        tk.Button(buttons, text='닫기', command=self.close).pack(side='right', padx=6)
-        self.top.protocol('WM_DELETE_WINDOW', self.close)
-        # 창이 어떤 경로로 사라지든(사용자가 닫든, root 가 함께 부수든) 정리한다.
-        # owner 등록만 믿으면 owner 없이 만든 패널이 Tk 자원을 남긴다.
-        self.top.bind('<Destroy>', self._on_destroy)
+        self._count()
         self.text.focus_set()
 
-    def _on_destroy(self, event: tk.Event) -> None:
-        if event.widget is self.top:
-            self._detach()
+    def _count(self) -> None:
+        try:
+            self.counter.config(text=f'{len(self._body())}자')
+        except tk.TclError:
+            pass
 
     def _body(self) -> str:
         return self.text.get('1.0', 'end').strip()
+
+    def _save_draft(self) -> None:
+        """쓰던 글을 초안으로. 창이 이미 사라졌으면 조용히 넘어간다."""
+        if self._submitted:
+            return
+        try:
+            body = self._body()
+            kind = self.kind.get()
+        except (tk.TclError, AttributeError):
+            return
+        self.drafts.save(self.draft_key, body=body, book_id=self.book_id, kind=kind)
 
     def save(self) -> None:
         body = self._body()
@@ -90,76 +179,153 @@ class WritePanel:
             self.journal.add_entry(body, book_id=chosen, kind=self.kind.get(),
                                    page=self.page.get().strip() or None)
         except (ValueError, KeyError) as exc:
-            messagebox.showerror('책 읽는 달팽이', f'저장하지 못했습니다.\n{exc}', parent=self.top)
+            # 저장에 실패하면 초안을 지우지 않는다. 글을 잃지 않는 쪽이 먼저다.
+            messagebox.showerror('책 읽는 달팽이', f'저장하지 못했습니다.\n{exc}',
+                                 parent=self.top)
             return
-        # 저장이 끝났으니 초안은 지운다. 저장 실패 시에는 남겨둬야 글을 잃지 않는다.
         self.drafts.clear(self.draft_key)
-        self._detach()
-        self.top.destroy()
-        # 저장이 끝난 뒤에 알린다. 임베딩 작업자를 깨워 되살리기가 이어진다.
-        if self.on_saved is not None:
-            self.on_saved()
+        self._submitted = True
+        on_saved = self.on_saved
+        self.close()
+        if on_saved is not None:
+            on_saved()
 
-    def _save_draft(self) -> None:
-        """쓰던 글을 초안으로. 창이 이미 사라졌으면 조용히 넘어간다."""
-        try:
-            body = self._body()
-            kind = self.kind.get()
-        except (tk.TclError, AttributeError):
-            return
-        self.drafts.save(self.draft_key, body=body, book_id=self.book_id, kind=kind)
-
-    def close(self) -> None:
-        """닫아도 글을 잃지 않는다. 쓰던 그대로 초안에 남긴다."""
-        self._save_draft()
-        self._detach()
-        self.top.destroy()
-
-    def _detach(self) -> None:
+    def _cleanup(self) -> None:
+        # **owner 가 있든 없든 초안은 남긴다.** owner 등록에만 기대면 owner 없이
+        # 만든 패널에서 쓰던 글이 사라진다.
+        if not self._submitted:
+            self._save_draft()
         if self.owner is not None:
             self.owner.unregister_closer(self._save_draft)
-            self.owner = None
-        # Tk 변수는 참조가 사라질 때 자기 인터프리터를 건드린다. 지금 놓아준다.
         self.kind = None
+        self.book_choice = None
 
 
-class LibraryPanel:
-    """책과 기록 수를 훑어본다."""
+class LibraryPanel(_Panel):
+    """책과 기록을 훑어본다. 책을 고르면 그 책의 기록이 시간순으로 보인다."""
 
-    def __init__(self, parent: tk.Misc, journal: Journal):
+    title = '내 서재'
+    size = '760x520'
+
+    def __init__(self, parent: tk.Misc, journal, *, owner: object | None = None,
+                 on_write: Callable[[str], None] | None = None):
+        super().__init__(parent, owner=owner)
         self.journal = journal
-        self.top = tk.Toplevel(parent)
-        self.top.title('내 서재')
-        self.top.geometry('460x360')
+        self.on_write = on_write
+        self.books: dict[str, str] = {}
 
-        self.listbox = tk.Listbox(self.top)
-        self.listbox.pack(fill='both', expand=True, padx=10, pady=10)
+        outer = ttk.Frame(self.top, padding=PAD_M)
+        outer.pack(fill='both', expand=True)
 
-        books = journal.list_books()
-        if not books:
-            self.listbox.insert('end', '아직 등록한 책이 없습니다.')
-        for book in books:
-            n = len(journal.entries_for_book(book.book_id))
-            self.listbox.insert('end', f'[{book.status}] {book.display_name} — 기록 {n}건')
+        bar = ttk.Frame(outer)
+        bar.pack(fill='x', pady=(0, PAD_S))
+        ttk.Label(bar, text='내 서재', style='Heading.TLabel').pack(side='left')
+        self.summary = ttk.Label(bar, style='Muted.TLabel')
+        self.summary.pack(side='right')
 
-        loose = [e for e in journal.recent_entries(limit=200) if e.book_id is None]
+        panes = ttk.PanedWindow(outer, orient='horizontal')
+        panes.pack(fill='both', expand=True)
+
+        left = ttk.Frame(panes)
+        self.tree = ttk.Treeview(left, columns=('status', 'entries'), height=14)
+        self.tree.heading('#0', text='책')
+        self.tree.heading('status', text='상태')
+        self.tree.heading('entries', text='기록')
+        self.tree.column('#0', width=280)
+        self.tree.column('status', width=70, anchor='center')
+        self.tree.column('entries', width=56, anchor='e')
+        self.tree.pack(side='left', fill='both', expand=True)
+        bar_y = ttk.Scrollbar(left, orient='vertical', command=self.tree.yview)
+        bar_y.pack(side='right', fill='y')
+        self.tree.configure(yscrollcommand=bar_y.set)
+        self.tree.bind('<<TreeviewSelect>>', lambda _e: self._show_entries())
+        panes.add(left, weight=3)
+
+        right = ttk.Frame(panes)
+        ttk.Label(right, text='기록', style='Caption.TLabel').pack(anchor='w')
+        self.detail = tk.Text(right, wrap='word', state='disabled', width=34,
+                              **text_defaults(self.top))
+        self.detail.pack(fill='both', expand=True, pady=(PAD_S // 2, 0))
+        actions = ttk.Frame(right)
+        actions.pack(fill='x', pady=(PAD_S, 0))
+        self.write_button = ttk.Button(actions, text='이 책에 기록 남기기',
+                                       style='Accent.TButton', state='disabled',
+                                       command=self._write_here)
+        self.write_button.pack(fill='x')
+        panes.add(right, weight=2)
+
+        self.refresh()
+
+    def refresh(self) -> None:
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+        self.books.clear()
+        counts = self.journal.entry_counts_by_book()
+        for book in self.journal.list_books(limit=500):
+            item = self.tree.insert('', 'end', text=book.display_name,
+                                    values=(STATUS_KO.get(book.status, book.status),
+                                            counts.get(book.book_id, 0)))
+            self.books[item] = book.book_id
+        loose = counts.get(None, 0)
         if loose:
-            self.listbox.insert('end', f'(책 없는 기록 {len(loose)}건)')
+            item = self.tree.insert('', 'end', text='(책 없는 기록)',
+                                    values=('—', loose))
+            self.books[item] = ''
+        total = self.journal.count_entries()
+        self.summary.config(text=f'책 {self.journal.count_books()}권 · 기록 {total}건')
 
-        tk.Label(self.top, text=f'전체 기록 {journal.count_entries()}건').pack(pady=(0, 8))
+    def _selected_book(self) -> str | None:
+        picked = self.tree.selection()
+        if not picked:
+            return None
+        return self.books.get(picked[0])
+
+    def _show_entries(self) -> None:
+        book_id = self._selected_book()
+        if book_id is None:
+            return
+        if book_id:
+            entries = self.journal.entries_for_book(book_id)
+            self.write_button.config(state='normal')
+        else:
+            entries = [e for e in self.journal.recent_entries(limit=300)
+                       if e.book_id is None]
+            self.write_button.config(state='disabled')
+
+        self.detail.config(state='normal')
+        self.detail.delete('1.0', 'end')
+        if not entries:
+            self.detail.insert('end', '아직 기록이 없습니다.')
+        for entry in entries:
+            mark = '“' if entry.kind == 'quote' else '·'
+            page = f'  {entry.page}' if entry.page else ''
+            self.detail.insert('end', f'{entry.created_at[:10]}{page}\n')
+            self.detail.insert('end', f'{mark} {entry.body}\n\n')
+        self.detail.config(state='disabled')
+
+    def _write_here(self) -> None:
+        book_id = self._selected_book()
+        if book_id and self.on_write is not None:
+            self.on_write(book_id)
+
+    def _cleanup(self) -> None:
+        self.books.clear()
 
 
-class AddBookPanel:
+class AddBookPanel(_Panel):
     """책을 등록한다. 검색이 안 되면 수동 입력으로 넘어간다.
 
     서지 서비스는 또 문을 닫는다(올해만 두 곳). 검색 실패가 등록 실패가 되면
-    안 되므로, 수동 입력 칸은 **처음부터 늘 열려 있다.** 검색은 그 칸을
-    채워주는 보조일 뿐이다.
+    안 되므로, 수동 입력 칸은 **처음부터 늘 열려 있다.**
     """
 
-    def __init__(self, parent: tk.Misc, journal: Journal, *,
-                 source=None, owner: object | None = None,
+    title = '책 등록'
+    size = '560x520'
+
+    def __init__(self, parent: tk.Misc, journal, *, source=None,
+                 owner: object | None = None,
                  on_added: Callable[[str, str | None], None] | None = None):
+        super().__init__(parent, owner=owner)
         self.journal = journal
         self.source = source
         self.on_added = on_added
@@ -167,79 +333,76 @@ class AddBookPanel:
         self._found: queue.Queue = queue.Queue()
         self._searching = False
         self._poll_after: str | None = None
-        self._disposed = False
-        # 창이 닫히기 전에 예약된 after 를 거두고 Tk 변수를 놓아준다.
-        # 안 그러면 root 가 사라진 뒤 'invalid command name ...' 이 뜨고,
-        # StringVar 소멸자가 배경 스레드에서 돌면 프로세스가 죽는다.
-        self.owner = owner if hasattr(owner, 'register_closer') else None
         if self.owner is not None:
             self.owner.register_closer(self.dispose)
 
-        self.top = tk.Toplevel(parent)
-        self.top.title('책 등록')
-        self.top.geometry('520x420')
+        self.status_var = tk.StringVar(value='reading')
 
-        bar = tk.Frame(self.top)
-        bar.pack(fill='x', padx=10, pady=(10, 4))
-        self.query = tk.Entry(bar)
+        outer = ttk.Frame(self.top, padding=PAD_M)
+        outer.pack(fill='both', expand=True)
+
+        bar = ttk.Frame(outer)
+        bar.pack(fill='x')
+        self.query = ttk.Entry(bar)
         self.query.pack(side='left', fill='x', expand=True)
         self.query.bind('<Return>', lambda _e: self.search())
-        tk.Button(bar, text='검색', command=self.search).pack(side='left', padx=(6, 0))
+        self.search_button = ttk.Button(bar, text='검색', command=self.search)
+        self.search_button.pack(side='left', padx=(PAD_S, 0))
 
-        self.status = tk.Label(self.top, anchor='w', text=self._idle_status())
-        self.status.pack(fill='x', padx=10)
+        self.status = ttk.Label(outer, style='Muted.TLabel', text=self._idle_status())
+        self.status.pack(fill='x', pady=(PAD_S // 2, PAD_S))
 
-        self.listbox = tk.Listbox(self.top, height=8)
-        self.listbox.pack(fill='both', expand=True, padx=10, pady=6)
+        self.listbox = tk.Listbox(outer, height=7, activestyle='none',
+                                  bg=PALETTE['paper'], fg=PALETTE['ink'],
+                                  selectbackground=PALETTE['moss_deep'],
+                                  selectforeground=PALETTE['on_accent'],
+                                  highlightthickness=1, relief='flat',
+                                  highlightbackground=PALETTE['border'])
+        self.listbox.pack(fill='both', expand=True)
         self.listbox.bind('<<ListboxSelect>>', lambda _e: self._fill_from_result())
 
-        form = tk.Frame(self.top)
-        form.pack(fill='x', padx=10)
+        ttk.Separator(outer).pack(fill='x', pady=PAD_M)
+
+        form = ttk.Frame(outer)
+        form.pack(fill='x')
+        form.columnconfigure(1, weight=1)
         self.title_entry = self._row(form, '제목', 0)
         self.author_entry = self._row(form, '저자', 1)
         self.publisher_entry = self._row(form, '출판사', 2)
         self.isbn_entry = self._row(form, 'ISBN', 3)
 
-        self.status_var = tk.StringVar(value='reading')
-        row = tk.Frame(self.top)
-        row.pack(fill='x', padx=10, pady=6)
-        for label, value in (('읽는 중', 'reading'), ('읽고 싶은', 'wishlist'),
-                             ('다 읽음', 'completed')):
-            tk.Radiobutton(row, text=label, variable=self.status_var,
-                           value=value).pack(side='left')
-        tk.Button(row, text='등록', command=self.add).pack(side='right')
-        self.top.bind('<Destroy>', self._on_destroy)
+        statuses = ttk.Frame(outer)
+        statuses.pack(fill='x', pady=(PAD_M, 0))
+        for label, value in STATUS_LABELS:
+            ttk.Radiobutton(statuses, text=label, variable=self.status_var,
+                            value=value).pack(side='left', padx=(0, PAD_S))
+        ttk.Button(statuses, text='등록', style='Accent.TButton',
+                   command=self.add).pack(side='right')
+        self.top.protocol('WM_DELETE_WINDOW', self.close)
         self.query.focus_set()
 
-    def _on_destroy(self, event: tk.Event) -> None:
-        if event.widget is self.top:
-            self.dispose()
+    @staticmethod
+    def _row(parent: ttk.Frame, label: str, row: int) -> ttk.Entry:
+        ttk.Label(parent, text=label).grid(row=row, column=0, sticky='w',
+                                           pady=2, padx=(0, PAD_S))
+        entry = ttk.Entry(parent)
+        entry.grid(row=row, column=1, sticky='ew', pady=2)
+        return entry
 
     def _idle_status(self) -> str:
         if self.source is None:
             return '검색이 꺼져 있습니다. 아래에 직접 입력해 등록하세요.'
-        return 'ISBN 또는 제목으로 검색하세요.'
+        return 'ISBN 또는 제목으로 검색하세요. 못 찾아도 아래에 직접 넣을 수 있습니다.'
 
-    @staticmethod
-    def _row(parent: tk.Frame, label: str, row: int) -> tk.Entry:
-        tk.Label(parent, text=label, width=6, anchor='w').grid(row=row, column=0, sticky='w')
-        entry = tk.Entry(parent)
-        entry.grid(row=row, column=1, sticky='ew', pady=1)
-        parent.columnconfigure(1, weight=1)
-        return entry
-
+    # ── 검색 ──────────────────────────────────────────
     def search(self) -> None:
         """검색은 네트워크다. **배경 스레드로 넘긴다.**
 
-        UI 스레드에서 부르면 응답이 늦는 만큼(최대 TIMEOUT_SEC = 8초) 창이 통째로
-        얼어붙는다. 결과는 큐에 담고 UI 스레드가 _poll_search 로 꺼낸다
-        (CLAUDE.md 스레드 규칙).
+        UI 스레드에서 부르면 응답이 늦는 만큼(최대 8초) 창이 통째로 얼어붙는다.
         """
         text = self.query.get().strip()
-        if not text:
+        if not text or self._searching:
             return
-        if self._searching:
-            return                      # 연타해도 요청이 겹치지 않는다
         self.listbox.delete(0, 'end')
         self.results = []
         if self.source is None:
@@ -247,33 +410,11 @@ class AddBookPanel:
             return
 
         self._searching = True
+        self.search_button.config(state='disabled')
         self.status.config(text='찾는 중…')
-        # **스레드에 self 를 넘기지 않는다.** 바운드 메서드를 넘기면 스레드가
-        # 패널을 통해 Tk root 까지 붙든다. 늦게 끝난 검색이 종료된 창의 마지막
-        # 참조를 배경 스레드에서 놓으면 인터프리터가
-        # 'Tcl_AsyncDelete: async handler deleted by the wrong thread' 로 죽는다.
         threading.Thread(target=_search_worker, args=(self.source, text, self._found),
                          name='catalog-search', daemon=True).start()
         self._poll_search()
-
-    def dispose(self) -> None:
-        """창이 사라지기 전에 Tk 자원을 놓아준다. 여러 번 불러도 안전하다."""
-        if self._disposed:
-            return
-        self._disposed = True
-        self._searching = False
-        if self._poll_after is not None:
-            try:
-                self.top.after_cancel(self._poll_after)
-            except tk.TclError:
-                pass
-            self._poll_after = None
-        if self.owner is not None:
-            self.owner.unregister_closer(self.dispose)
-            self.owner = None
-        # Tk 변수는 참조가 사라질 때 자기 인터프리터를 건드린다. 지금 놓아준다.
-        self.status_var = None
-        self.results = []
 
     def _poll_search(self) -> None:
         """UI 스레드. 큐를 확인하고 결과가 오면 그린다."""
@@ -293,6 +434,7 @@ class AddBookPanel:
         self._searching = False
         try:
             if self.top.winfo_exists():
+                self.search_button.config(state='normal')
                 self._show_results(text, records)
         except tk.TclError:
             pass
@@ -328,7 +470,6 @@ class AddBookPanel:
             messagebox.showinfo('책 읽는 달팽이', '제목을 입력하세요.', parent=self.top)
             return
         # 창을 부수기 **전에** 위젯에서 필요한 것을 모두 꺼낸다.
-        # destroy() 뒤에 읽으면 'invalid command name ...' TclError 가 난다.
         picked = self.listbox.curselection()
         source = self.results[picked[0]].source if picked else 'manual'
         cover_url = self.results[picked[0]].cover_url if picked else None
@@ -342,11 +483,21 @@ class AddBookPanel:
             messagebox.showerror('책 읽는 달팽이', f'등록하지 못했습니다.\n{exc}',
                                  parent=self.top)
             return
-        self.dispose()
-        self.top.destroy()
-        # 표지 내려받기는 네트워크다. 호출부가 배경으로 넘긴다.
-        if self.on_added is not None:
-            self.on_added(book.book_id, cover_url)
+        on_added = self.on_added
+        self.close()
+        if on_added is not None:
+            on_added(book.book_id, cover_url)
+
+    def _cleanup(self) -> None:
+        self._searching = False
+        if self._poll_after is not None:
+            try:
+                self.top.after_cancel(self._poll_after)
+            except tk.TclError:
+                pass
+            self._poll_after = None
+        self.status_var = None
+        self.results = []
 
 
 def _search_worker(source, text: str, found: queue.Queue) -> None:

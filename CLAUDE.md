@@ -50,7 +50,7 @@ onnxruntime (임베딩 인코딩 전용) / PyInstaller onedir / Inno Setup
 **원화는 아직 없다.** 자리표시 팩으로 파이프라인만 검증했다
 (`python tools/render_placeholder_pack.py` — 저장소에 커밋하지 않는다).
 
-동작이 검증된 것 — `python -m unittest discover -s tests` (282건 통과)
+동작이 검증된 것 — `python -m unittest discover -s tests` (289건 통과)
 GUI 테스트는 tkinter·디스플레이가 없으면 자동으로 건너뛴다.
 
 | 있는 것 | 파일 |
@@ -78,15 +78,16 @@ GUI 테스트는 tkinter·디스플레이가 없으면 자동으로 건너뛴다
 | 팩 규격 검증 | `pet/validation.py` |
 | 원화 도구 (생성·검증·설치) | `tools/render_placeholder_pack.py`, `tools/validate_sprite_pack.py`, `tools/install_sprite_pack.py` |
 | 달팽이 창 (단일 클래스) | `pet/window.py` |
-| 기록·서재 창 (임시) | `pet/panels.py` |
+| 기록·서재·책 등록 창 | `pet/panels.py` |
+| ttk 스타일 (팔레트 적용) | `pet/styling.py` |
 | 실행 진입점 | `__main__.py` |
 | 폰트·색 (대비 검증됨) | `theme.py` |
 
 비어 있는 것 — **원화**, 책장 뷰, 주간 요약, 트레이, 내보내기, 빌드 스펙. **번들 모델(multilingual-e5-small ONNX)도 아직 없다** —
 없어도 앱은 돌고 기록도 쌓인다. 되살리기만 조용히 쉰다. `docs/PORTING_MAP.md`대로 전작에서 가져와 채운다.
 
-`pet/panels.py`는 **일부러 꾸미지 않았다.** 기능(1~4) → 디자인(5~6) 순서이므로
-지금 다듬으면 6단계에서 갈아엎을 화면을 다듬게 된다.
+패널은 6-b 에서 ttk 로 다시 짰다. 색·폰트는 `pet/styling.py` 를 거치며,
+값을 패널에 박아넣지 않는다.
 
 ## 저장소 계층 쓰는 법
 
@@ -224,6 +225,22 @@ journal.add_entry('숲으로 간 이유', book_id=book.book_id, kind='quote', pa
 **같은 창을 두 번 띄우지 않는다.** `PetWindow.show_once(key, factory)` 를 쓴다.
 기록 창을 두 개 열면 둘이 같은 `draft_key` 를 두고 다투다 나중에 닫은 쪽이
 앞의 글을 덮어쓴다.
+
+**패널은 `_Panel` 을 상속한다 — 한 겹까지만.** 그 위에 또 겹을 쌓지 않는다.
+`_Panel` 이 Toplevel·스타일 적용·`<Destroy>` 정리를 맡고, 하위는 `_cleanup()` 에서
+자기 Tk 자원만 거둔다.
+
+### ttkbootstrap 은 선택이고, 조심해서 쓴다
+
+`pet/styling.py` 가 우리 팔레트로 사용자 테마를 만들어 등록한다. **색의 출처는
+언제나 `theme.PALETTE` 다** — ttkbootstrap 기본 색에 덮이면 6-a 에서 맞춘 대비가
+무너진다. 없으면 기본 ttk('clam')에 같은 색을 입힌다.
+
+`ttkbootstrap.Style` 은 **프로세스 전역 싱글턴**이라 처음 만든 root 를 계속 붙든다.
+그 root 가 죽으면 이후 ttk 조작마다 죽은 위젯에 `<<ThemeChanged>>` 를 쏘아
+ttk 전체가 오염된다(테스트 23건이 이걸로 깨졌다). `_try_bootstrap()` 이 붙들고
+있는 root 의 생존을 확인하고, 죽었으면 싱글턴을 비운 뒤 새로 만든다.
+**배율 전환처럼 창을 다시 만드는 경로에서 실제로 걸린다.**
 
 ## 함정 두 가지
 

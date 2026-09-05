@@ -3,4 +3,7 @@ pystray>=0.19,<1
 onnxruntime>=1.18,<2
 tokenizers>=0.15,<1
 numpy>=1.26,<3
-ttkbootstrap>=1.10,<2
+# ttkbootstrap 은 **선택**이다. 없으면 기본 ttk('clam')에 같은 팔레트를 입힌다.
+# pet/styling.py 가 API 가 어긋나도 조용히 내려가므로 버전을 좁게 묶지 않는다.
+# (1.x 와 2.x 는 Style 생성 방식이 다르다 — 2.2.2 로 검증했다.)
+ttkbootstrap>=1.10

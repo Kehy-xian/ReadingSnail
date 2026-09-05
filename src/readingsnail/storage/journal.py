@@ -389,6 +389,17 @@ class Journal:
                     'SELECT count(*) AS n FROM books WHERE status=?', (str(status),)).fetchone()
             return int(row['n'])
 
+    def entry_counts_by_book(self) -> dict[str | None, int]:
+        """책마다 기록이 몇 건인지 한 번에. 책 없는 기록은 None 키로 온다.
+
+        서재 화면이 책마다 따로 세면 N+1 질의가 된다. 지금은 빨라도 책이
+        늘면 UI 스레드에서 눈에 띄기 시작한다.
+        """
+        with self.db.connect() as con:
+            rows = con.execute(
+                'SELECT book_id, count(*) AS n FROM entries GROUP BY book_id').fetchall()
+            return {r['book_id']: int(r['n']) for r in rows}
+
     def stalled_books(self, *, days: int = 7, limit: int = 10) -> list[Book]:
         """'읽는 중'인데 한동안 기록이 없는 책. 달팽이의 STALLED 갈래가 쓴다.
 

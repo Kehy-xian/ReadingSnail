@@ -184,9 +184,14 @@ class AppBoot(unittest.TestCase):
         book = self.journal.add_book('월든', author='헨리 데이비드 소로')
         self.journal.add_entry('기록', book_id=book.book_id)
         panel = LibraryPanel(self.pet.root, self.journal)
-        rows = [panel.listbox.get(i) for i in range(panel.listbox.size())]
-        self.assertTrue(any('월든' in r and '1건' in r for r in rows))
-        panel.top.destroy()
+        try:
+            rows = [(panel.tree.item(i, 'text'), panel.tree.item(i, 'values'))
+                    for i in panel.tree.get_children()]
+            self.assertTrue(any('월든' in text and str(values[1]) == '1'
+                                for text, values in rows), rows)
+            self.assertIn('책 1권', panel.summary.cget('text'))
+        finally:
+            panel.close()
 
     def test_전작_이전을_거절하면_결국_그만_묻는다(self):
         from readingsnail.__main__ import DECLINE_KEY, MAX_ASKS
@@ -775,3 +780,135 @@ class SpriteRendering(unittest.TestCase):
                 window.root.update()          # TclError 가 나면 안 된다
         finally:
             second.close()
+
+
+@unittest.skipUnless(GUI, REASON)
+class Styling(unittest.TestCase):
+    """색의 출처는 언제나 theme.PALETTE 다. ttkbootstrap 이 덮어쓰지 않는다."""
+
+    def setUp(self) -> None:
+        import tkinter as tk
+        self.root = tk.Tk()
+        self.root.withdraw()
+
+    def tearDown(self) -> None:
+        self.root.destroy()
+
+    def test_스타일이_우리_팔레트를_쓴다(self):
+        from readingsnail.pet.styling import apply
+        from readingsnail.theme import PALETTE
+        style = apply(self.root)
+        self.assertEqual(style.lookup('TFrame', 'background'), PALETTE['paper'])
+        self.assertEqual(style.lookup('Accent.TButton', 'background'),
+                         PALETTE['moss_deep'])
+
+    def test_ttkbootstrap이_없어도_돌아간다(self):
+        """설치가 덜 끝났다고 앱이 안 뜨면 안 된다."""
+        import builtins
+
+        from readingsnail.pet import styling
+        real_import = builtins.__import__
+
+        def blocked(name, *args, **kwargs):
+            if name.startswith('ttkbootstrap'):
+                raise ImportError('없는 셈 치기')
+            return real_import(name, *args, **kwargs)
+
+        builtins.__import__ = blocked
+        try:
+            style = styling.apply(self.root)
+        finally:
+            builtins.__import__ = real_import
+        from readingsnail.theme import PALETTE
+        self.assertEqual(style.lookup('TFrame', 'background'), PALETTE['paper'])
+        self.assertEqual(style.theme_use(), 'clam')
+
+    def test_텍스트_기본값도_같은_색이다(self):
+        from readingsnail.pet.styling import apply, text_defaults
+        from readingsnail.theme import PALETTE
+        apply(self.root)
+        defaults = text_defaults(self.root)
+        self.assertEqual(defaults['bg'], PALETTE['paper'])
+        self.assertEqual(defaults['fg'], PALETTE['ink'])
+        self.assertEqual(defaults['selectbackground'], PALETTE['moss_deep'])
+        self.assertEqual(defaults['selectforeground'], PALETTE['on_accent'])
+
+
+@unittest.skipUnless(GUI, REASON)
+class LibraryPanelBehaviour(unittest.TestCase):
+    """서재는 책마다 따로 세지 않는다. 책이 늘면 N+1 이 눈에 띄기 시작한다."""
+
+    def setUp(self) -> None:
+        import os
+        from tempfile import TemporaryDirectory
+        self._tmp = TemporaryDirectory()
+        os.environ['READINGSNAIL_DATA_DIR'] = self._tmp.name
+
+        from readingsnail.paths import default_db_path
+        from readingsnail.pet.window import PetWindow
+        from readingsnail.storage.db import open_database
+        from readingsnail.storage.journal import Journal
+
+        self.db = open_database(default_db_path())
+        self.journal = Journal(self.db)
+        self.pet = PetWindow(start_at=(120, 120))
+
+    def tearDown(self) -> None:
+        import os
+        self.pet.close()
+        self.db.close()
+        os.environ.pop('READINGSNAIL_DATA_DIR', None)
+        self._tmp.cleanup()
+
+    def test_한_번에_기록_수를_센다(self):
+        book = self.journal.add_book('월든')
+        for i in range(3):
+            self.journal.add_entry(f'기록 {i}', book_id=book.book_id)
+        self.journal.add_entry('책 없는 기록')
+        counts = self.journal.entry_counts_by_book()
+        self.assertEqual(counts[book.book_id], 3)
+        self.assertEqual(counts[None], 1)
+
+    def test_책을_고르면_그_책의_기록이_보인다(self):
+        from readingsnail.pet.panels import LibraryPanel
+        book = self.journal.add_book('월든', author='소로')
+        self.journal.add_entry('숲으로 간 이유', book_id=book.book_id, kind='quote')
+        self.journal.add_entry('다른 책 기록')
+        panel = LibraryPanel(self.pet.root, self.journal)
+        try:
+            target = [i for i in panel.tree.get_children()
+                      if '월든' in panel.tree.item(i, 'text')]
+            self.assertTrue(target)
+            panel.tree.selection_set(target[0])
+            panel._show_entries()
+            shown = panel.detail.get('1.0', 'end')
+            self.assertIn('숲으로 간 이유', shown)
+            self.assertNotIn('다른 책 기록', shown)
+        finally:
+            panel.close()
+
+    def test_책_없는_기록도_한_줄로_보인다(self):
+        from readingsnail.pet.panels import LibraryPanel
+        self.journal.add_entry('책 없이 남긴 메모')
+        panel = LibraryPanel(self.pet.root, self.journal)
+        try:
+            texts = [panel.tree.item(i, 'text') for i in panel.tree.get_children()]
+            self.assertIn('(책 없는 기록)', texts)
+        finally:
+            panel.close()
+
+    def test_많은_책도_빠르게_연다(self):
+        import time
+
+        from readingsnail.pet.panels import LibraryPanel
+        for i in range(120):
+            book = self.journal.add_book(f'책 {i}')
+            self.journal.add_entry(f'기록 {i}', book_id=book.book_id)
+        started = time.time()
+        panel = LibraryPanel(self.pet.root, self.journal)
+        try:
+            elapsed = time.time() - started
+            self.assertLess(elapsed, 1.5, f'서재 여는 데 {elapsed:.2f}초')
+            self.assertEqual(len(panel.tree.get_children()), 120)
+        finally:
+            panel.close()

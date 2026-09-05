@@ -68,7 +68,14 @@ class WritePanel:
         tk.Button(buttons, text='저장', command=self.save).pack(side='right')
         tk.Button(buttons, text='닫기', command=self.close).pack(side='right', padx=6)
         self.top.protocol('WM_DELETE_WINDOW', self.close)
+        # 창이 어떤 경로로 사라지든(사용자가 닫든, root 가 함께 부수든) 정리한다.
+        # owner 등록만 믿으면 owner 없이 만든 패널이 Tk 자원을 남긴다.
+        self.top.bind('<Destroy>', self._on_destroy)
         self.text.focus_set()
+
+    def _on_destroy(self, event: tk.Event) -> None:
+        if event.widget is self.top:
+            self._detach()
 
     def _body(self) -> str:
         return self.text.get('1.0', 'end').strip()
@@ -97,10 +104,10 @@ class WritePanel:
         """쓰던 글을 초안으로. 창이 이미 사라졌으면 조용히 넘어간다."""
         try:
             body = self._body()
-        except tk.TclError:
+            kind = self.kind.get()
+        except (tk.TclError, AttributeError):
             return
-        self.drafts.save(self.draft_key, body=body,
-                         book_id=self.book_id, kind=self.kind.get())
+        self.drafts.save(self.draft_key, body=body, book_id=self.book_id, kind=kind)
 
     def close(self) -> None:
         """닫아도 글을 잃지 않는다. 쓰던 그대로 초안에 남긴다."""
@@ -112,6 +119,8 @@ class WritePanel:
         if self.owner is not None:
             self.owner.unregister_closer(self._save_draft)
             self.owner = None
+        # Tk 변수는 참조가 사라질 때 자기 인터프리터를 건드린다. 지금 놓아준다.
+        self.kind = None
 
 
 class LibraryPanel:
@@ -149,13 +158,22 @@ class AddBookPanel:
     """
 
     def __init__(self, parent: tk.Misc, journal: Journal, *,
-                 source=None, on_added: Callable[[str, str | None], None] | None = None):
+                 source=None, owner: object | None = None,
+                 on_added: Callable[[str, str | None], None] | None = None):
         self.journal = journal
         self.source = source
         self.on_added = on_added
         self.results: list = []
         self._found: queue.Queue = queue.Queue()
         self._searching = False
+        self._poll_after: str | None = None
+        self._disposed = False
+        # 창이 닫히기 전에 예약된 after 를 거두고 Tk 변수를 놓아준다.
+        # 안 그러면 root 가 사라진 뒤 'invalid command name ...' 이 뜨고,
+        # StringVar 소멸자가 배경 스레드에서 돌면 프로세스가 죽는다.
+        self.owner = owner if hasattr(owner, 'register_closer') else None
+        if self.owner is not None:
+            self.owner.register_closer(self.dispose)
 
         self.top = tk.Toplevel(parent)
         self.top.title('책 등록')
@@ -190,7 +208,12 @@ class AddBookPanel:
             tk.Radiobutton(row, text=label, variable=self.status_var,
                            value=value).pack(side='left')
         tk.Button(row, text='등록', command=self.add).pack(side='right')
+        self.top.bind('<Destroy>', self._on_destroy)
         self.query.focus_set()
+
+    def _on_destroy(self, event: tk.Event) -> None:
+        if event.widget is self.top:
+            self.dispose()
 
     def _idle_status(self) -> str:
         if self.source is None:
@@ -225,26 +248,54 @@ class AddBookPanel:
 
         self._searching = True
         self.status.config(text='찾는 중…')
-        threading.Thread(target=self._search_in_background, args=(text,),
+        # **스레드에 self 를 넘기지 않는다.** 바운드 메서드를 넘기면 스레드가
+        # 패널을 통해 Tk root 까지 붙든다. 늦게 끝난 검색이 종료된 창의 마지막
+        # 참조를 배경 스레드에서 놓으면 인터프리터가
+        # 'Tcl_AsyncDelete: async handler deleted by the wrong thread' 로 죽는다.
+        threading.Thread(target=_search_worker, args=(self.source, text, self._found),
                          name='catalog-search', daemon=True).start()
         self._poll_search()
 
-    def _search_in_background(self, text: str) -> None:
-        """배경 스레드. Tk 를 건드리지 않고 큐에만 넣는다."""
-        from ..services.catalog import search_books
-        self._found.put((text, search_books(self.source, text, limit=20)))
+    def dispose(self) -> None:
+        """창이 사라지기 전에 Tk 자원을 놓아준다. 여러 번 불러도 안전하다."""
+        if self._disposed:
+            return
+        self._disposed = True
+        self._searching = False
+        if self._poll_after is not None:
+            try:
+                self.top.after_cancel(self._poll_after)
+            except tk.TclError:
+                pass
+            self._poll_after = None
+        if self.owner is not None:
+            self.owner.unregister_closer(self.dispose)
+            self.owner = None
+        # Tk 변수는 참조가 사라질 때 자기 인터프리터를 건드린다. 지금 놓아준다.
+        self.status_var = None
+        self.results = []
 
     def _poll_search(self) -> None:
         """UI 스레드. 큐를 확인하고 결과가 오면 그린다."""
+        self._poll_after = None
+        if self._disposed:
+            return
         try:
             text, records = self._found.get_nowait()
         except queue.Empty:
-            if self._searching and self.top.winfo_exists():
-                self.top.after(120, self._poll_search)
+            if self._searching:
+                try:
+                    if self.top.winfo_exists():
+                        self._poll_after = self.top.after(120, self._poll_search)
+                except tk.TclError:
+                    self._searching = False
             return
         self._searching = False
-        if self.top.winfo_exists():
-            self._show_results(text, records)
+        try:
+            if self.top.winfo_exists():
+                self._show_results(text, records)
+        except tk.TclError:
+            pass
 
     def _show_results(self, text: str, records: list) -> None:
         self.results = records
@@ -291,7 +342,21 @@ class AddBookPanel:
             messagebox.showerror('책 읽는 달팽이', f'등록하지 못했습니다.\n{exc}',
                                  parent=self.top)
             return
+        self.dispose()
         self.top.destroy()
         # 표지 내려받기는 네트워크다. 호출부가 배경으로 넘긴다.
         if self.on_added is not None:
             self.on_added(book.book_id, cover_url)
+
+
+def _search_worker(source, text: str, found: queue.Queue) -> None:
+    """배경 스레드에서 도는 검색. **Tk 객체를 하나도 붙들지 않는다.**
+
+    모듈 수준 함수라 패널(그리고 그 너머의 Tk root)을 참조하지 않는다.
+    받는 것은 출처·검색어·큐뿐이다.
+    """
+    from ..services.catalog import search_books
+    try:
+        found.put((text, search_books(source, text, limit=20)))
+    except Exception:
+        found.put((text, []))

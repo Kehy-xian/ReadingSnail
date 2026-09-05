@@ -12,8 +12,8 @@
 | `storage/sqlite_store.py`, `journal.py`, `draft.py`, `settings.py` | 책 1:N 기록, 임시저장 |
 | ~~`services/memory.py`~~ | **완료.** `services/recall.py` — 무작위 대신 임베딩 최근접으로 |
 | `services/data_transfer.py`, `version_backup.py` | 백업·이전·버전 전환 |
-| `pet_sprite.py`, `pet_art.py`, `art_override_store.py`, `sprite_validation.py` | 스프라이트 파이프라인 |
-| `tools/validate_sprite_pack.py`, `install_sprite_override.py` | 원화 교체 도구 |
+| ~~`pet_sprite.py`, `pet_art.py`, `sprite_validation.py`~~ | **완료.** `pet/art.py`·`sprites.py`·`validation.py`. 진화 형태·승인 계보는 버림 |
+| ~~`tools/validate_sprite_pack.py`, `install_sprite_override.py`~~ | **완료.** + `render_placeholder_pack.py` 추가 |
 | ~~`pet_behavior.py`~~ | **완료.** `pet/behavior.py` — 8방향·수직 절반 속도로 고쳐 가져옴 |
 | `services/single_instance.py`, `windows_autostart.py`, `update_check.py`, `update_install.py` | 운영 인프라 |
 | `BookEater.spec`, `installer/BookEater.iss` | 빌드·설치 (모델 경로만 수정) |

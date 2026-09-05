@@ -23,6 +23,11 @@ resources/models/**/tokenizer.json
 # 폰트 — 라이선스 확인 후 개별 허용할 것
 resources/fonts/*
 
+# 자리표시 스프라이트는 생성물이다. 원화가 오면 그때 커밋한다.
+#   python tools/render_placeholder_pack.py
+resources/sprites/*.png
+resources/props/*.png
+
 .env
 .env.*
 

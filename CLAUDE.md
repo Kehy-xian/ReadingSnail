@@ -44,10 +44,13 @@ onnxruntime (임베딩 인코딩 전용) / PyInstaller onedir / Inno Setup
 `docs/SPEC.md`가 확정 명세, `docs/PORTING_MAP.md`가 전작에서 가져올 것과
 버릴 것의 목록이다. 작업 전에 둘 다 읽을 것.
 
-**1~4단계 완료.** `python -m readingsnail` 로 뜨고, 책을 검색해 등록하고, 기록을
-남기면 잠시 뒤 달팽이가 비슷한 옛 기록을 꺼낸다. 5단계(스프라이트)가 다음이다.
+**1~5단계 완료.** `python -m readingsnail` 로 뜨고, 책을 검색해 등록하고, 기록을
+남기면 잠시 뒤 달팽이가 비슷한 옛 기록을 꺼낸다. 6단계(디자인 정비)가 다음이다.
 
-동작이 검증된 것 — `python -m unittest discover -s tests` (230건 통과)
+**원화는 아직 없다.** 자리표시 팩으로 파이프라인만 검증했다
+(`python tools/render_placeholder_pack.py` — 저장소에 커밋하지 않는다).
+
+동작이 검증된 것 — `python -m unittest discover -s tests` (270건 통과)
 GUI 테스트는 tkinter·디스플레이가 없으면 자동으로 건너뛴다.
 
 | 있는 것 | 파일 |
@@ -70,13 +73,16 @@ GUI 테스트는 tkinter·디스플레이가 없으면 자동으로 건너뛴다
 | 벡터 저장 형식·유사도 (순수 파이썬) | `nlp/vectors.py` |
 | E5 ONNX 인코더 (게으른 적재) | `nlp/encoder.py` |
 | 8방향 이동 (순수 로직) | `pet/behavior.py` |
+| 스프라이트 규약 (순수) | `pet/art.py` |
+| 스프라이트 적재·합성·캐시 | `pet/sprites.py` |
+| 팩 규격 검증 | `pet/validation.py` |
+| 원화 도구 (생성·검증·설치) | `tools/render_placeholder_pack.py`, `tools/validate_sprite_pack.py`, `tools/install_sprite_pack.py` |
 | 달팽이 창 (단일 클래스) | `pet/window.py` |
 | 기록·서재 창 (임시) | `pet/panels.py` |
 | 실행 진입점 | `__main__.py` |
 | 폰트·색 상수 | `theme.py` |
 
-비어 있는 것 — 스프라이트 파이프라인, 책장 뷰, 주간 요약, 트레이, 내보내기,
-빌드 스펙. **번들 모델(multilingual-e5-small ONNX)도 아직 없다** —
+비어 있는 것 — **원화**, 책장 뷰, 주간 요약, 트레이, 내보내기, 빌드 스펙. **번들 모델(multilingual-e5-small ONNX)도 아직 없다** —
 없어도 앱은 돌고 기록도 쌓인다. 되살리기만 조용히 쉰다. `docs/PORTING_MAP.md`대로 전작에서 가져와 채운다.
 
 `pet/panels.py`는 **일부러 꾸미지 않았다.** 기능(1~4) → 디자인(5~6) 순서이므로
@@ -142,6 +148,36 @@ journal.add_entry('숲으로 간 이유', book_id=book.book_id, kind='quote', pa
     가 한 건도 못 썼는데 True 를 돌려주면 같은 배치를 영원히 다시 집어온다
     (실측 2초에 26만 회). '더 할 일이 있다'가 아니라 '실제로 진전했다'를
     돌려줄 것.
+
+## 그림을 다룰 때
+
+  · **한 상태는 한 출처에서 통째로 온다.** 프레임 하나가 없으면 그 상태만 벡터로
+    내려간다. 절반만 불러오면 애니메이션이 튄다. 출처끼리 프레임을 섞지 않는다.
+  · **깨진 교체본이 멀쩡한 번들 그림을 가리지 않는다.** 교체본 적재에 실패하면
+    번들로 내려간다.
+  · **껍데기는 고정 레이어로 뺀다.** `snail_body_<state>_<nn>.png` + `snail_shell.png`.
+    walk 12장에서 몸통만 그리면 되므로 작업량이 절반 아래로 내려간다.
+  · **바닥선과 접지 그림자는 고정한다.** 프레임마다 흔들리면 이동할 때 위아래로
+    튄다. `tools/validate_sprite_pack.py` 가 3px 넘는 흔들림을 잡는다.
+    (자리표시 팩을 만들 때 실제로 여기 걸렸다.)
+  · 원화는 설치본이 아니라 데이터 폴더의 `art_overrides/` 에 넣는다.
+    설치·업데이트가 사용자 그림을 지우면 안 된다.
+  · **원본 크기에 상한이 있다**(`MAX_SOURCE_SIDE`, 규격의 4배). 상한이 없으면
+    6000×6000 한 장이 144MB 로 펼쳐지고 프레임 8장이면 1GB 를 넘는다.
+    잘못 만든 팩 하나가 앱을 메모리로 눌러버리지 않게 한다.
+
+### Tk 이미지 수명 — 폰트 캐시와 같은 함정이다
+
+  · `ImageTk.PhotoImage` 는 **만든 root 에 묶인다.** `master=` 를 넘기지 않으면
+    기본 root 에 만들어지고, 다른 창에 쓰면 `image "pyimageN" doesn't exist` 다.
+    캐시는 창마다 하나씩 두고 `master=self.root` 로 묶는다.
+  · **창을 부수기 전에 이미지를 놓아준다**(`SpriteCache.invalidate()`).
+    소멸자가 죽은 인터프리터를 건드리면 프로세스가 죽는다.
+  · **배경 스레드에 `self`(위젯을 쥔 객체)를 넘기지 않는다.** 늦게 끝난 스레드가
+    종료된 창의 마지막 참조를 놓으면 `Tcl_AsyncDelete` 로 죽는다.
+    `panels._search_worker` 처럼 필요한 값만 넘긴다.
+  · **패널의 `StringVar` 와 예약한 `after` 는 `<Destroy>` 에서 거둔다.**
+    owner 등록만 믿으면 owner 없이 만든 패널이 Tk 자원을 남긴다.
 
 ## 무너져도 기록에는 닿아야 한다
 

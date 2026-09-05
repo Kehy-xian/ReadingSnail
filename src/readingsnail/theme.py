@@ -10,8 +10,14 @@ BookEater에서는 폰트가 `font=('', 18, 'bold')`처럼 가족명 없이 30�
 
 from __future__ import annotations
 
-import tkinter
-import tkinter.font as tkfont
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:                      # 타입 힌트용. 실행 시에는 불러오지 않는다.
+    import tkinter
+
+# tkinter 는 **함수 안에서** 불러온다. 색·간격은 순수 데이터인데 모듈 수준에서
+# tkinter 를 끌어오면 빌드 도구·검증기·헤드리스 스크립트가 팔레트조차 못 읽는다.
+# (자리표시 스프라이트 생성기가 실제로 여기서 막혔다.)
 
 # ── 폰트 ──────────────────────────────────────────────
 # 앞에서부터 설치/동봉된 것을 찾아 쓴다. 전부 없으면 Tk 기본값.
@@ -34,7 +40,7 @@ _SIZES = {
 # 객체는 죽은 인터프리터를 가리켜 TclError 가 나거나, 더 나쁘게는 그 이름이 새
 # 인터프리터에 없어 조용히 다른 폰트로 그려진다. 그래서 인터프리터별로 나눠 담는다.
 # (창 배율을 바꾸느라 창을 다시 만드는 경로에서 실제로 걸린다.)
-_resolved: dict[tuple[object, str, bool], tkfont.Font] = {}
+_resolved: dict[tuple[object, str, bool], object] = {}
 
 
 def reset_font_cache() -> None:
@@ -42,7 +48,9 @@ def reset_font_cache() -> None:
     _resolved.clear()
 
 
-def _first_available(stack: tuple[str, ...], master: tkinter.Misc | None) -> str:
+def _first_available(stack: tuple[str, ...], master: 'tkinter.Misc | None') -> str:
+    import tkinter.font as tkfont
+
     families = set(tkfont.families(root=master) if master is not None else tkfont.families())
     for name in stack:
         if name in families:
@@ -51,11 +59,14 @@ def _first_available(stack: tuple[str, ...], master: tkinter.Misc | None) -> str
 
 
 def font(role: str = 'body', *, bold: bool = False,
-         master: tkinter.Misc | None = None) -> tkfont.Font:
+         master: 'tkinter.Misc | None' = None) -> 'tkfont.Font':
     """역할 이름으로 폰트를 얻는다. tkinter 초기화 이후에만 호출할 것.
 
     master 를 넘기면 그 창의 인터프리터에 만든다. 창이 둘 이상이면 반드시 넘길 것.
     """
+    import tkinter
+    import tkinter.font as tkfont
+
     root = master if master is not None else tkinter._default_root
     if root is None:
         raise RuntimeError('tkinter 초기화 이후에만 theme.font() 를 부를 것')

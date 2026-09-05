@@ -20,14 +20,18 @@
 from __future__ import annotations
 
 import sys
+import time
 import tkinter as tk
 from dataclasses import replace
+from pathlib import Path
 from typing import Callable
 
 from ..theme import PALETTE, TRANSPARENT_KEY, font
+from . import art
 from .behavior import PetMotion, RoamPlanner, WorkArea
+from .sprites import SpriteCache, frame_index
 
-BASE_SIZE = 190          # 원화 캔버스 크기. 스프라이트 규격과 같다.
+BASE_SIZE = art.CANVAS   # 원화 캔버스 크기. 스프라이트 규격과 같다.
 ROAM_INTERVAL_MS = 70    # 이동 틱
 DRAW_INTERVAL_MS = 120   # 그리기 틱
 BUBBLE_HOLD_MS = 9000    # 말풍선이 떠 있는 시간
@@ -84,6 +88,9 @@ class PetWindow:
         on_write: Callable[[], None] | None = None,
         on_library: Callable[[], None] | None = None,
         on_add_book: Callable[[], None] | None = None,
+        sprites: SpriteCache | None = None,
+        resource_root: str | Path | None = None,
+        data_dir: str | Path | None = None,
         on_quit: Callable[[], None] | None = None,
         root: tk.Tk | None = None,
     ) -> None:
@@ -92,6 +99,8 @@ class PetWindow:
         self.on_write = on_write
         self.on_library = on_library
         self.on_add_book = on_add_book
+        # 스프라이트가 없으면 벡터로 그린다. 원화가 한 상태씩 들어와도
+        # 그 상태만 교체되고 나머지는 그대로 벡터다(SPRITE_GUIDE_KO.md).
         self.on_quit = on_quit
 
         self.root = root if root is not None else tk.Tk()
@@ -109,6 +118,15 @@ class PetWindow:
         self.canvas = tk.Canvas(self.root, width=self.size, height=self.size, bg=bg,
                                 highlightthickness=0, bd=0)
         self.canvas.pack(fill='both', expand=True)
+
+        # 캐시는 **이 창에 묶인다.** root 가 생긴 뒤에 만들어야 한다.
+        # 밖에서 만든 캐시를 다른 창에 물리면 Tk 이미지가 깨진다
+        # ('image "pyimageN" doesn't exist').
+        if sprites is None and resource_root is not None:
+            sprites = SpriteCache(tk, resource_root, master=self.root, data_dir=data_dir)
+        self.sprites = sprites
+        self._state_started_ms = 0
+        self._sprite_state: str | None = None
 
         self.planner = RoamPlanner(step_px=6, window_width=self.size,
                                    window_height=self.size, margin=8)
@@ -273,8 +291,40 @@ class PetWindow:
         self._after(DRAW_INTERVAL_MS, self._draw_loop)
 
     # ── 그리기 ────────────────────────────────────────
+    def _elapsed_ms(self) -> int:
+        """현재 상태가 시작된 뒤 흐른 시간. 프레임 번호를 여기서 뽑는다."""
+        now = int(time.monotonic() * 1000)
+        if self.motion.state != self._sprite_state:
+            self._sprite_state = self.motion.state
+            self._state_started_ms = now
+        return now - self._state_started_ms
+
     def draw(self) -> None:
-        """벡터 폴백. 스프라이트가 들어오면 여기만 갈아끼운다(5단계)."""
+        """스프라이트가 있으면 그걸로, 없으면 벡터로."""
+        if self._draw_sprite():
+            if self._bubble:
+                self._draw_bubble(self.canvas, self.size / BASE_SIZE)
+            return
+        self._draw_vector()
+
+    def _draw_sprite(self) -> bool:
+        """그렸으면 True. 한 상태라도 그림이 없으면 그 상태만 벡터로 내려간다."""
+        if self.sprites is None:
+            return False
+        elapsed = self._elapsed_ms()
+        frames = self.sprites.frames(self.motion.state, facing=self.motion.facing,
+                                     size=self.size)
+        if not frames:
+            return False
+        image = frames[frame_index(self.motion.state, elapsed) % len(frames)]
+        c = self.canvas
+        c.delete('all')
+        # 이미지 참조는 캐시가 붙들고 있다. Tk 는 참조가 사라지면 그림을 회수한다.
+        c.create_image(self.size // 2, self.size // 2, image=image)
+        return True
+
+    def _draw_vector(self) -> None:
+        """벡터 폴백. 프레임이 없어도 앱이 동작해야 한다는 원칙의 바닥이다."""
         c = self.canvas
         c.delete('all')
         s = self.size / BASE_SIZE
@@ -426,6 +476,12 @@ class PetWindow:
                 pass
         self._closers.clear()
         self._panels.clear()
+        # 스프라이트 이미지를 **root 를 부수기 전에** 놓아준다.
+        # ImageTk.PhotoImage 는 회수될 때 자기 인터프리터에 'image delete' 를 보낸다.
+        # 인터프리터가 먼저 사라지면 'main thread is not in main loop' 를 거쳐
+        # 'Tcl_AsyncDelete' 로 프로세스가 죽는다. 폰트 캐시와 같은 부류다.
+        if self.sprites is not None:
+            self.sprites.invalidate()
         self._call(self.on_quit)
         try:
             self.root.destroy()

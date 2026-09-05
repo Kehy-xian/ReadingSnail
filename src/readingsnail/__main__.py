@@ -35,6 +35,9 @@ from .storage.settings import Settings
 # 주기적으로 한 마디. 너무 잦으면 잔소리가 된다.
 SPEAK_EVERY_MS = 6 * 60 * 1000
 
+# 달팽이에게 얹을 소품. 쉼표로 구분한 이름들.
+SETTING_PROPS = 'pet.props'
+
 
 class Companion:
     """달팽이가 말하는 리듬을 쥔다.
@@ -228,7 +231,7 @@ def main(argv: list[str] | None = None) -> int:
     def on_add_book() -> None:
         from .pet.panels import AddBookPanel
         pet.show_once('add_book', lambda: AddBookPanel(
-            pet.root, journal, source=catalog, on_added=fetch_cover))
+            pet.root, journal, source=catalog, owner=pet, on_added=fetch_cover))
 
     def fetch_cover(book_id: str, url: str | None) -> None:
         """표지 내려받기는 네트워크다. UI 스레드를 막지 않는다."""
@@ -243,7 +246,12 @@ def main(argv: list[str] | None = None) -> int:
         db.close()
 
     pet = PetWindow(on_write=on_write, on_library=on_library,
-                    on_add_book=on_add_book, on_quit=on_quit)
+                    on_add_book=on_add_book, on_quit=on_quit,
+                    resource_root=resource_root(), data_dir=data_dir)
+    # 소품은 순수 사용자 선택이다 — 해금 개념이 없다(CLAUDE.md).
+    if pet.sprites is not None:
+        chosen = [p for p in (settings.get(SETTING_PROPS, '') or '').split(',') if p.strip()]
+        pet.sprites.set_props(tuple(p.strip() for p in chosen))
     companion = Companion(pet, db, journal, default_encoder(resource_root()))
     _offer_migration(pet.root, db)
     companion.start()

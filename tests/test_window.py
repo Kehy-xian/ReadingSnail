@@ -677,3 +677,101 @@ class OnePanelAtATime(unittest.TestCase):
         first.close()
         second = self.pet.show_once('write', make)
         self.assertIsNot(first, second)
+
+
+@unittest.skipUnless(GUI, REASON)
+class SpriteRendering(unittest.TestCase):
+    """그림이 한 상태씩 들어와도 그 상태만 교체되고 나머지는 벡터로 남는다."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        sys.path.insert(0, str(ROOT / 'tools'))
+        try:
+            import render_placeholder_pack as renderer
+        except ImportError:
+            raise unittest.SkipTest('Pillow 없음')
+        from tempfile import TemporaryDirectory
+        cls._tmp = TemporaryDirectory()
+        cls.resource_root = Path(cls._tmp.name)
+        cls.pack = cls.resource_root / 'resources' / 'sprites'
+        # 말풍선이 뜨면 상태가 talk 로 바뀐다. 그림 있는 상태와 없는 상태를
+        # 함께 두어야 '상태별 폴백'을 제대로 시험할 수 있다.
+        renderer.main([str(cls.pack),
+                       '--props', str(cls.resource_root / 'resources' / 'props'),
+                       '--states', 'idle,talk'])
+
+    @classmethod
+    def tearDownClass(cls) -> None:
+        cls._tmp.cleanup()
+
+    def setUp(self) -> None:
+        import os
+        from tempfile import TemporaryDirectory
+        from readingsnail.pet.window import PetWindow
+        self._data = TemporaryDirectory()
+        os.environ['READINGSNAIL_DATA_DIR'] = self._data.name
+        self.pet = PetWindow(start_at=(120, 120),
+                             resource_root=self.resource_root,
+                             data_dir=self._data.name)
+
+    def tearDown(self) -> None:
+        import os
+        self.pet.close()
+        os.environ.pop('READINGSNAIL_DATA_DIR', None)
+        self._data.cleanup()
+
+    def test_그림이_있는_상태는_스프라이트로_그린다(self):
+        from dataclasses import replace
+        self.pet.motion = replace(self.pet.motion, state='idle')
+        self.assertTrue(self.pet._draw_sprite())
+
+    def test_그림이_없는_상태만_벡터로_내려간다(self):
+        from dataclasses import replace
+        for state in ('walk', 'eat', 'sleep'):
+            self.pet.motion = replace(self.pet.motion, state=state)
+            self.pet._sprite_state = None
+            self.assertFalse(self.pet._draw_sprite(), state)
+            self.pet.draw()                      # 벡터로라도 그려져야 한다
+            self.assertGreater(len(self.pet.canvas.find_all()), 5, state)
+
+    def test_애니메이션이_흐른다(self):
+        import time
+        from dataclasses import replace
+        self.pet.motion = replace(self.pet.motion, state='idle')
+        seen = set()
+        deadline = time.time() + 0.9
+        while time.time() < deadline:
+            self.pet.draw()
+            self.pet.root.update()
+            items = self.pet.canvas.find_all()
+            if items:
+                seen.add(self.pet.canvas.itemcget(items[0], 'image'))
+            time.sleep(0.03)
+        self.assertGreater(len(seen), 2, f'프레임이 바뀌지 않는다: {len(seen)}')
+
+    def test_말풍선은_스프라이트_위에도_뜬다(self):
+        from dataclasses import replace
+        self.pet.motion = replace(self.pet.motion, state='idle')
+        self.pet.say('숲으로 간 이유')
+        self.pet.root.update()
+        kinds = {self.pet.canvas.type(i) for i in self.pet.canvas.find_all()}
+        self.assertIn('image', kinds)
+        self.assertIn('text', kinds)
+
+    def test_창마다_캐시가_따로_묶인다(self):
+        """ImageTk 이미지는 만든 root 에 묶인다. 다른 창에 쓰면
+        'image "pyimageN" doesn't exist' 로 터진다. 폰트 캐시와 같은 함정이다."""
+        from dataclasses import replace
+
+        from readingsnail.pet.window import PetWindow
+        second = PetWindow(start_at=(400, 120), resource_root=self.resource_root,
+                           data_dir=self._data.name)
+        try:
+            self.assertIsNot(second.sprites, self.pet.sprites)
+            self.assertIs(second.sprites.master, second.root)
+            for window in (self.pet, second):
+                window.motion = replace(window.motion, state='idle')
+                window.draw()
+                window.root.update()          # TclError 가 나면 안 된다
+        finally:
+            second.close()

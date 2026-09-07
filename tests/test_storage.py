@@ -361,6 +361,72 @@ class StartupResilience(unittest.TestCase):
             db.close()
 
 
+class WroteButCannotReadBack(Base):
+    """방금 쓴 줄을 다시 읽지 못하는 때 — 앱이 도는 중에 백업으로 되돌리면 실제로 걸린다.
+
+    `assert` 로 두면 `python -O` 에서 검사가 사라져 None 이 흘러나가고,
+    걸릴 때는 까닭 없는 AssertionError 만 뜬다. 둘 다 사용자를 속인다.
+    """
+
+    def test_기록을_다시_못_읽으면_까닭을_말한다(self):
+        original = self.journal.get_entry
+        self.journal.get_entry = lambda _id: None
+        try:
+            with self.assertRaises(StorageError) as caught:
+                self.journal.add_entry('사라진 기록')
+        finally:
+            self.journal.get_entry = original
+        self.assertIn('기록', str(caught.exception))
+
+    def test_책을_다시_못_읽으면_까닭을_말한다(self):
+        book = self.journal.add_book('월든')
+        original = self.journal.get_book
+        self.journal.get_book = lambda _id: None
+        try:
+            with self.assertRaises(StorageError):
+                self.journal.set_status(book.book_id, 'completed')
+            with self.assertRaises(StorageError):
+                self.journal.update_book(book.book_id, title='다른 제목')
+        finally:
+            self.journal.get_book = original
+
+    def test_고쳐_쓴_기록도_마찬가지다(self):
+        entry = self.journal.add_entry('처음 글')
+        original = self.journal.get_entry
+        self.journal.get_entry = lambda _id: None
+        try:
+            with self.assertRaises(StorageError):
+                self.journal.revise_entry(entry.entry_id, '고친 글')
+        finally:
+            self.journal.get_entry = original
+
+    def test_검사가_최적화로_사라지지_않는다(self):
+        # `python -O` 는 assert 를 통째로 지운다. 그러면 None 이 그대로 흘러나가
+        # 한참 뒤 엉뚱한 자리에서 AttributeError 로 터진다.
+        import subprocess
+        import sys as _sys
+        script = """
+import sys
+sys.path.insert(0, "src")
+from readingsnail.storage.db import Database, StorageError
+from readingsnail.storage.journal import Journal
+journal = Journal(Database(":memory:"))
+journal.get_entry = lambda _id: None
+try:
+    journal.add_entry("기록")
+except StorageError:
+    print("막힘")
+else:
+    print("통과함")
+"""
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'probe.py'
+            path.write_text(script, encoding='utf-8')
+            out = subprocess.run([_sys.executable, '-O', str(path)],
+                                 capture_output=True, text=True, cwd=str(ROOT))
+        self.assertEqual(out.stdout.strip(), '막힘', out.stderr)
+
+
 class InvisibleText(unittest.TestCase):
     """눈에 보이지 않는 문자만 있는 기록은 빈 기록이다.
 

@@ -15,11 +15,13 @@ PetWindow 를 상속해서 패널을 붙이지 않는다. 전작이 그렇게 �
 from __future__ import annotations
 
 import queue
+import sqlite3
 import threading
 import tkinter as tk
 from tkinter import messagebox, ttk
 from typing import Callable
 
+from ..storage.db import StorageError
 from ..theme import PAD_L, PAD_M, PAD_S, PALETTE, font
 from .styling import apply as apply_style
 from .styling import text_defaults
@@ -180,8 +182,10 @@ class WritePanel(_Panel):
         try:
             self.journal.add_entry(body, book_id=chosen, kind=self.kind.get(),
                                    page=self.page.get().strip() or None)
-        except (ValueError, KeyError) as exc:
+        except (ValueError, KeyError, StorageError, sqlite3.Error) as exc:
             # 저장에 실패하면 초안을 지우지 않는다. 글을 잃지 않는 쪽이 먼저다.
+            # 디스크가 차거나 백업으로 되돌리는 중이면 저장소 쪽에서도 터진다.
+            # **조용히 터지면 안 된다** — 사용자는 저장된 줄 알고 창을 닫는다.
             messagebox.showerror('책 읽는 달팽이', f'저장하지 못했습니다.\n{exc}',
                                  parent=self.top)
             return
@@ -712,3 +716,298 @@ def _readable_on(background: str) -> str:
                                                         background):
         return PALETTE['ink']
     return PALETTE['on_accent']
+
+
+class WeeklyPanel(_Panel):
+    """주간 요약. **알림으로 띄우지 않는다**(SPEC 6항) — 보러 왔을 때만 보인다."""
+
+    title = '이번 주'
+    size = '460x460'
+
+    def __init__(self, parent: tk.Misc, journal, *, owner: object | None = None):
+        super().__init__(parent, owner=owner)
+        self.journal = journal
+
+        outer = ttk.Frame(self.top, padding=PAD_M)
+        outer.pack(fill='both', expand=True)
+        ttk.Label(outer, text='이번 주', style='Heading.TLabel').pack(anchor='w')
+
+        self.body = tk.Text(outer, wrap='word', state='disabled',
+                            **text_defaults(self.top))
+        self.body.pack(fill='both', expand=True, pady=(PAD_S, 0))
+        ttk.Button(outer, text='닫기', command=self.close).pack(anchor='e',
+                                                              pady=(PAD_S, 0))
+        self.refresh()
+
+    def refresh(self) -> None:
+        from ..services.summary import as_lines, summarize
+        self.body.config(state='normal')
+        self.body.delete('1.0', 'end')
+        self.body.insert('end', '\n'.join(as_lines(summarize(self.journal))))
+        self.body.config(state='disabled')
+
+
+class SettingsPanel(_Panel):
+    """운영 설정. 크기·자동 시작·백업·내보내기·서지 인증키."""
+
+    title = '설정'
+    size = '520x560'
+
+    def __init__(self, parent: tk.Misc, *, journal, settings, db_path, data_dir,
+                 owner: object | None = None,
+                 on_scale: Callable[[float], None] | None = None):
+        super().__init__(parent, owner=owner)
+        self.journal = journal
+        self.settings = settings
+        self.db_path = db_path
+        self.data_dir = data_dir
+        self.on_scale = on_scale
+        # 내보내기·백업은 배경에서 돈다. 결과는 큐로만 온다(스레드 규칙).
+        self._done: queue.Queue = queue.Queue()
+        self._working = False
+        self._work_after: str | None = None
+
+        self.scale_var = tk.StringVar(value=settings.get('pet.scale', '1.0') or '1.0')
+        self.autostart_var = tk.BooleanVar()
+        self.cert_var = tk.StringVar(value=settings.get('catalog.nl_cert_key', '') or '')
+
+        outer = ttk.Frame(self.top, padding=PAD_M)
+        outer.pack(fill='both', expand=True)
+
+        # 크기
+        ttk.Label(outer, text='달팽이 크기', style='Heading.TLabel').pack(anchor='w')
+        row = ttk.Frame(outer)
+        row.pack(fill='x', pady=(PAD_S // 2, PAD_M))
+        for label, value in (('100%', '1.0'), ('75%', '0.75'), ('50%', '0.5')):
+            ttk.Radiobutton(row, text=label, variable=self.scale_var, value=value,
+                            command=self._apply_scale).pack(side='left',
+                                                            padx=(0, PAD_M))
+
+        # 자동 시작
+        ttk.Label(outer, text='자동 시작', style='Heading.TLabel').pack(anchor='w')
+        self.autostart_note = ttk.Label(outer, style='Muted.TLabel', wraplength=460,
+                                        justify='left')
+        self._refresh_autostart()
+        self.autostart_check = ttk.Checkbutton(
+            outer, text='컴퓨터를 켤 때 함께 시작', variable=self.autostart_var,
+            command=self._apply_autostart)
+        self.autostart_check.pack(anchor='w', pady=(PAD_S // 2, 0))
+        self.autostart_note.pack(anchor='w', pady=(0, PAD_M))
+
+        # 내보내기 — 선택 기능이 아니다
+        ttk.Label(outer, text='내보내기', style='Heading.TLabel').pack(anchor='w')
+        ttk.Label(outer, style='Muted.TLabel', wraplength=460, justify='left',
+                  text='기록은 언제든 들고 나갈 수 있어야 합니다.').pack(anchor='w')
+        row = ttk.Frame(outer)
+        row.pack(fill='x', pady=(PAD_S // 2, PAD_M))
+        ttk.Button(row, text='Markdown 으로',
+                   command=lambda: self._export('md')).pack(side='left')
+        ttk.Button(row, text='CSV 로',
+                   command=lambda: self._export('csv')).pack(side='left',
+                                                             padx=(PAD_S, 0))
+
+        # 백업
+        ttk.Label(outer, text='백업', style='Heading.TLabel').pack(anchor='w')
+        row = ttk.Frame(outer)
+        row.pack(fill='x', pady=(PAD_S // 2, 0))
+        ttk.Button(row, text='지금 백업', command=self._backup).pack(side='left')
+        ttk.Button(row, text='백업에서 되돌리기',
+                   command=self._restore).pack(side='left', padx=(PAD_S, 0))
+        self.backup_note = ttk.Label(outer, style='Muted.TLabel', wraplength=460,
+                                     justify='left')
+        self.backup_note.pack(anchor='w', pady=(PAD_S // 2, PAD_M))
+        self._refresh_backups()
+
+        # 서지 인증키
+        ttk.Label(outer, text='국립중앙도서관 인증키', style='Heading.TLabel').pack(anchor='w')
+        ttk.Label(outer, style='Muted.TLabel', wraplength=460, justify='left',
+                  text='책 검색에 씁니다. 없어도 수동으로 등록할 수 있습니다.').pack(anchor='w')
+        row = ttk.Frame(outer)
+        row.pack(fill='x', pady=(PAD_S // 2, 0))
+        entry = ttk.Entry(row, textvariable=self.cert_var, show='•')
+        entry.pack(side='left', fill='x', expand=True)
+        ttk.Button(row, text='저장', command=self._save_cert).pack(side='left',
+                                                                 padx=(PAD_S, 0))
+        self.top.protocol('WM_DELETE_WINDOW', self.close)
+
+    # ── 크기 ──────────────────────────────────────────
+    def _apply_scale(self) -> None:
+        self.settings.set('pet.scale', self.scale_var.get())
+        if self.on_scale is not None:
+            self.on_scale(float(self.scale_var.get()))
+
+    # ── 자동 시작 ─────────────────────────────────────
+    def _refresh_autostart(self) -> None:
+        from ..services import autostart
+        if not autostart.supported():
+            self.autostart_var.set(False)
+            self.autostart_note.config(text='Windows 에서만 됩니다.')
+            return
+        self.autostart_var.set(autostart.is_enabled())
+        if not autostart.can_enable():
+            self.autostart_note.config(
+                text='설치본에서만 켤 수 있습니다. (개발 중에는 잠겨 있습니다)')
+        else:
+            self.autostart_note.config(text='기본은 꺼짐입니다.')
+
+    def _apply_autostart(self) -> None:
+        from ..services import autostart
+        try:
+            autostart.set_enabled(self.autostart_var.get())
+        except RuntimeError as exc:
+            messagebox.showinfo('책 읽는 달팽이', str(exc), parent=self.top)
+        except OSError as exc:
+            # 학교 컴퓨터처럼 정책으로 Run 키가 잠겨 있을 수 있다. 조용히 실패하면
+            # 체크는 켜진 채 남고 사용자는 등록된 줄 안다.
+            messagebox.showerror('책 읽는 달팽이',
+                                 f'자동 시작을 바꾸지 못했습니다.\n{exc}',
+                                 parent=self.top)
+        self._refresh_autostart()
+
+    # ── 내보내기 ──────────────────────────────────────
+    def _export(self, kind: str) -> None:
+        """내보내기는 **배경으로 넘긴다.**
+
+        기록 5만 건이면 Markdown 0.9초, CSV 1.2초다(실측). UI 스레드에서 부르면
+        그동안 창이 통째로 얼어붙는다 — 서지 검색과 같은 자리다.
+        """
+        from tkinter import filedialog
+
+        from ..services import export
+        if self._working:
+            return
+        target = filedialog.asksaveasfilename(
+            parent=self.top, defaultextension=f'.{kind}',
+            initialfile=export.suggested_name(kind),
+            filetypes=((f'{kind.upper()} 파일', f'*.{kind}'), ('모든 파일', '*.*')))
+        if not target:
+            return
+        self._start_work(f'내보내는 중… ({target})', _export_worker,
+                         (self.journal, kind, target, self._done))
+
+    # ── 백업 ──────────────────────────────────────────
+    def _refresh_backups(self) -> None:
+        from ..services import backup
+        found = backup.list_backups(self.data_dir)
+        if not found:
+            self.backup_note.config(text='아직 백업이 없습니다.')
+        else:
+            self.backup_note.config(
+                text=f'백업 {len(found)}개 · 가장 최근 {found[0].label}')
+
+    def _backup(self) -> None:
+        """백업도 배경이다. 기록이 많으면 파일을 통째로 베끼는 시간이 든다."""
+        if self._working:
+            return
+        self._start_work('백업하는 중…', _backup_worker,
+                         (self.db_path, self.data_dir, self._done))
+
+    def _restore(self) -> None:
+        from tkinter import filedialog
+
+        from ..services import backup
+        found = backup.list_backups(self.data_dir)
+        initial = str(found[0].path.parent) if found else str(self.data_dir)
+        chosen = filedialog.askopenfilename(
+            parent=self.top, initialdir=initial,
+            filetypes=(('백업 파일', '*.sqlite3'), ('모든 파일', '*.*')))
+        if not chosen:
+            return
+        if not messagebox.askyesno(
+                '책 읽는 달팽이',
+                '지금 기록을 백업 시점으로 되돌립니다.\n'
+                '되돌리기 전 상태도 따로 백업해 두므로 다시 돌아올 수 있습니다.\n\n'
+                '계속할까요? (앱을 다시 켜야 반영됩니다)', parent=self.top):
+            return
+        try:
+            undo = backup.restore_backup(chosen, self.db_path, self.data_dir)
+        except (backup.BackupError, OSError) as exc:
+            messagebox.showerror('책 읽는 달팽이', f'되돌리지 못했습니다.\n{exc}',
+                                 parent=self.top)
+            return
+        self._refresh_backups()
+        messagebox.showinfo(
+            '책 읽는 달팽이',
+            f'되돌렸습니다. 앱을 다시 켜 주세요.\n\n'
+            f'되돌리기 전 상태는 여기 있습니다:\n{undo}', parent=self.top)
+
+    # ── 인증키 ────────────────────────────────────────
+    def _save_cert(self) -> None:
+        self.settings.set('catalog.nl_cert_key', self.cert_var.get().strip())
+        messagebox.showinfo('책 읽는 달팽이',
+                            '저장했습니다. 앱을 다시 켜면 검색에 쓰입니다.',
+                            parent=self.top)
+
+    # ── 배경 일감 ─────────────────────────────────────
+    def _start_work(self, note: str, worker, args: tuple) -> None:
+        """UI 스레드. 배경 스레드를 띄우고 큐를 지켜본다.
+
+        **스레드에 self 를 넘기지 않는다.** 늦게 끝난 스레드가 닫힌 창의 마지막
+        참조를 놓으면 `Tcl_AsyncDelete` 로 프로세스가 죽는다(CLAUDE.md).
+        """
+        self._working = True
+        self.backup_note.config(text=note)
+        threading.Thread(target=worker, args=args, name='panel-work',
+                         daemon=True).start()
+        self._poll_work()
+
+    def _poll_work(self) -> None:
+        self._work_after = None
+        if self._disposed:
+            return
+        try:
+            ok, message = self._done.get_nowait()
+        except queue.Empty:
+            try:
+                if self.top.winfo_exists():
+                    self._work_after = self.top.after(120, self._poll_work)
+            except tk.TclError:
+                self._working = False
+            return
+        self._working = False
+        try:
+            if not self.top.winfo_exists():
+                return
+            self._refresh_backups()
+            if ok:
+                messagebox.showinfo('책 읽는 달팽이', message, parent=self.top)
+            else:
+                messagebox.showerror('책 읽는 달팽이', message, parent=self.top)
+        except tk.TclError:
+            pass
+
+    def _cleanup(self) -> None:
+        if self._work_after is not None:
+            try:
+                self.top.after_cancel(self._work_after)
+            except tk.TclError:
+                pass
+            self._work_after = None
+        self.scale_var = None
+        self.autostart_var = None
+        self.cert_var = None
+
+
+def _export_worker(journal, kind: str, target: str, done: queue.Queue) -> None:
+    """배경 스레드에서 도는 내보내기. **Tk 객체를 하나도 붙들지 않는다.**"""
+    from ..services import export
+    try:
+        if kind == 'md':
+            export.write_markdown(journal, target)
+        else:
+            export.write_csv(journal, target)
+    except Exception as exc:
+        done.put((False, f'내보내지 못했습니다.\n{exc}'))
+        return
+    done.put((True, f'저장했습니다.\n{target}'))
+
+
+def _backup_worker(db_path, data_dir, done: queue.Queue) -> None:
+    """배경 스레드에서 도는 백업. 위와 같은 규칙."""
+    from ..services import backup
+    try:
+        made = backup.make_backup(db_path, data_dir, reason='manual')
+    except Exception as exc:
+        done.put((False, f'백업하지 못했습니다.\n{exc}'))
+        return
+    done.put((True, f'백업했습니다.\n{made}'))

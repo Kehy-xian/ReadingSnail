@@ -82,3 +82,17 @@ def resource_root(*, environ: dict[str, str] | None = None) -> Path:
     if getattr(sys, 'frozen', False):
         return Path(sys.executable).resolve().parent
     return Path(__file__).resolve().parents[2]
+
+
+def readonly_uri(path: str | Path) -> str:
+    """읽기 전용으로 열 SQLite URI. **문자열을 직접 이어 붙이지 않는다.**
+
+    `f'file:{path}?mode=ro'` 는 경로에 `?` 나 `#` 가 있으면 거기서 잘린다.
+    그때 SQLite 는 오류를 내지 않고 **엉뚱한 빈 DB 를 새로 만든다** — 백업이
+    멀쩡한 얼굴로 비어 있게 된다는 뜻이다(`백업 #2.sqlite3` 에서 실제로 걸렸다).
+    바탕화면에서 고른 파일이 그런 이름일 수 있다.
+
+    `Path.as_uri()` 가 그런 글자를 퍼센트로 감싸고 Windows 드라이브 문자도
+    `file:///C:/...` 로 제대로 적는다.
+    """
+    return Path(path).absolute().as_uri() + '?mode=ro'

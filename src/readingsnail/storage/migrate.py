@@ -29,6 +29,7 @@ import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from ..paths import readonly_uri
 from .db import Database
 from .journal import BOOK_STATUSES, TIME_FORMAT, utc_now
 
@@ -73,7 +74,7 @@ def _open_legacy(path: str | Path) -> sqlite3.Connection:
     if not src.is_file():
         raise MigrationError(f'전작 DB 가 없다: {src}')
     # mode=ro. 원본을 여는 것 자체로도 바꾸지 않는다.
-    con = sqlite3.connect(f'file:{src}?mode=ro', uri=True, timeout=5.0)
+    con = sqlite3.connect(readonly_uri(src), uri=True, timeout=5.0)
     con.row_factory = sqlite3.Row
     return con
 

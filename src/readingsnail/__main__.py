@@ -20,8 +20,10 @@ import threading
 from collections import OrderedDict
 
 from .nlp.encoder import default_encoder
-from .paths import default_data_dir, default_db_path, legacy_db_path, resource_root
+from .paths import (default_data_dir, default_db_path, legacy_db_path,
+                    readonly_uri, resource_root)
 from .services import dialogue, recall
+from .services import autostart, backup, single_instance
 from .services.catalog import build_source
 from .services.covers import attach_cover
 from .services.embedding import EmbeddingWorker
@@ -38,6 +40,11 @@ SPEAK_EVERY_MS = 6 * 60 * 1000
 
 # 달팽이에게 얹을 소품. 쉼표로 구분한 이름들.
 SETTING_PROPS = 'pet.props'
+SETTING_SCALE = 'pet.scale'
+SETTING_VERSION = 'app.version'
+
+# 트레이 이벤트를 확인하는 주기.
+TRAY_POLL_MS = 400
 
 
 class Companion:
@@ -203,15 +210,34 @@ def _offer_migration(root, db) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    from . import __version__
     from .pet.window import PetWindow, enable_dpi_awareness
+
+    # 달팽이를 두 마리 띄우지 않는다. 자동 시작과 바로가기가 겹칠 수 있다.
+    guard = single_instance.acquire()
+    if not guard.acquired:
+        print('이미 실행 중입니다.', file=sys.stderr)
+        return 0
 
     enable_dpi_awareness()          # Tk 보다 먼저
     # 동봉 폰트를 이 프로세스에만 등록한다. 사용자 컴퓨터에 설치하지 않는다.
     # Tk 를 만들기 전에 해야 첫 창부터 제대로 된 폰트로 뜬다.
     load_bundled_fonts(resource_root())
 
+    db_path = default_db_path()
+    data_dir = default_data_dir()
+
+    # 새 버전이 처음 켜질 때, 스키마를 손대기 **전에** 통째로 복사해 둔다.
+    # 마이그레이션이 잘못돼도 어제로 돌아갈 수 있다.
+    stored_version = _read_stored_version(db_path)
     try:
-        db = open_database(default_db_path())
+        backup.backup_for_version(db_path, data_dir, __version__,
+                                  stored_version=stored_version)
+    except backup.BackupError as exc:
+        print(f'버전 백업을 만들지 못했습니다: {exc}', file=sys.stderr)
+
+    try:
+        db = open_database(db_path)
     except StorageError as exc:
         print(f'기록을 열 수 없습니다: {exc}', file=sys.stderr)
         return 1
@@ -219,8 +245,8 @@ def main(argv: list[str] | None = None) -> int:
     journal = Journal(db)
     drafts = Drafts(db)
     settings = Settings(db)
+    settings.set(SETTING_VERSION, __version__)
     catalog = build_source(settings)
-    data_dir = default_data_dir()
 
     def on_write(book_id: str | None = None) -> None:
         from .pet.panels import WritePanel
@@ -261,13 +287,50 @@ def main(argv: list[str] | None = None) -> int:
             target=attach_cover, args=(journal, book_id, url, data_dir),
             name='cover', daemon=True).start()
 
+    def on_weekly() -> None:
+        from .pet.panels import WeeklyPanel
+        pet.show_once('weekly', lambda: WeeklyPanel(pet.root, journal, owner=pet))
+
+    def on_settings() -> None:
+        from .pet.panels import SettingsPanel
+        pet.show_once('settings', lambda: SettingsPanel(
+            pet.root, journal=journal, settings=settings, db_path=db_path,
+            data_dir=data_dir, owner=pet, on_scale=lambda _s: _ask_restart(pet)))
+
+    def on_tray() -> None:
+        """집에 보내기. 트레이가 없으면 그냥 숨기지 않는다 — 돌아올 길이 없다."""
+        if not tray.show():
+            from tkinter import messagebox
+            messagebox.showinfo('책 읽는 달팽이',
+                                '트레이를 쓸 수 없어 숨기지 않습니다.\n'
+                                '(pystray 가 설치되지 않았습니다)', parent=pet.root)
+            return
+        pet.root.withdraw()
+
+    def poll_tray() -> None:
+        for event in tray.drain():
+            if event == 'restore':
+                tray.hide()
+                pet.root.deiconify()
+            elif event == 'quit':
+                tray.hide()
+                pet.close()
+                return
+        pet.call_later(TRAY_POLL_MS, poll_tray)
+
     def on_quit() -> None:
         companion.stop()
+        tray.hide()
         db.close()
+        guard.close()
 
-    pet = PetWindow(on_write=lambda: on_write(), on_library=on_library,
-                    on_add_book=on_add_book, on_shelf=on_shelf,
-                    on_props=on_props, on_quit=on_quit,
+    from .pet.tray import TrayIcon
+    tray = TrayIcon()
+    scale = _read_scale(settings)
+    pet = PetWindow(scale=scale, on_write=lambda: on_write(),
+                    on_library=on_library, on_add_book=on_add_book,
+                    on_shelf=on_shelf, on_props=on_props, on_weekly=on_weekly,
+                    on_settings=on_settings, on_tray=on_tray, on_quit=on_quit,
                     resource_root=resource_root(), data_dir=data_dir)
     # 소품은 순수 사용자 선택이다 — 해금 개념이 없다(CLAUDE.md).
     if pet.sprites is not None:
@@ -276,8 +339,42 @@ def main(argv: list[str] | None = None) -> int:
     companion = Companion(pet, db, journal, default_encoder(resource_root()))
     _offer_migration(pet.root, db)
     companion.start()
+    poll_tray()
     pet.run()
     return 0
+
+
+def _read_scale(settings) -> float:
+    try:
+        return max(0.5, min(1.0, float(settings.get(SETTING_SCALE, '1.0') or '1.0')))
+    except (TypeError, ValueError):
+        return 1.0
+
+
+def _read_stored_version(db_path) -> str | None:
+    """DB 를 열기 **전에** 지난 버전을 본다. 스키마를 손대기 전에 백업해야 하므로
+    open_database() 를 거칠 수 없다."""
+    from pathlib import Path
+    if not Path(db_path).is_file():
+        return None
+    try:
+        con = sqlite3.connect(readonly_uri(db_path), uri=True, timeout=5)
+    except sqlite3.DatabaseError:
+        return None
+    try:
+        row = con.execute("SELECT value FROM settings WHERE key=?",
+                          (SETTING_VERSION,)).fetchone()
+        return str(row[0]) if row else None
+    except sqlite3.DatabaseError:
+        return None
+    finally:
+        con.close()
+
+
+def _ask_restart(pet) -> None:
+    from tkinter import messagebox
+    messagebox.showinfo('책 읽는 달팽이',
+                        '앱을 다시 켜면 새 크기로 뜹니다.', parent=pet.root)
 
 
 if __name__ == '__main__':

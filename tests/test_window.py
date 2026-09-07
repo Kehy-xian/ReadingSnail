@@ -1156,3 +1156,221 @@ class WritePanelPerBook(unittest.TestCase):
             panel.close()
         self._open()
         self.assertLessEqual(len(self.pet._panels), 2)
+
+
+@unittest.skipUnless(GUI, REASON)
+class OperationsPanels(unittest.TestCase):
+    """설정·주간 요약·트레이. 대화상자는 반드시 막고 시험한다 —
+    모달이 뜨면 테스트가 영원히 멈춘다."""
+
+    def setUp(self) -> None:
+        import os
+        from tempfile import TemporaryDirectory
+
+        from readingsnail.pet import panels
+        self._tmp = TemporaryDirectory()
+        os.environ['READINGSNAIL_DATA_DIR'] = self._tmp.name
+
+        from readingsnail.paths import default_data_dir, default_db_path
+        from readingsnail.pet.window import PetWindow
+        from readingsnail.storage.db import open_database
+        from readingsnail.storage.journal import Journal
+        from readingsnail.storage.settings import Settings
+
+        self.shown: list = []
+        self._real = (panels.messagebox.showinfo, panels.messagebox.showerror,
+                      panels.messagebox.askyesno)
+        panels.messagebox.showinfo = lambda *a, **k: self.shown.append(('info', a))
+        panels.messagebox.showerror = lambda *a, **k: self.shown.append(('error', a))
+        panels.messagebox.askyesno = lambda *a, **k: True
+
+        self.db_path = default_db_path()
+        self.data_dir = default_data_dir()
+        self.db = open_database(self.db_path)
+        self.journal = Journal(self.db)
+        self.settings = Settings(self.db)
+        self.pet = PetWindow(start_at=(120, 120))
+
+    def tearDown(self) -> None:
+        import os
+
+        from readingsnail.pet import panels
+        (panels.messagebox.showinfo, panels.messagebox.showerror,
+         panels.messagebox.askyesno) = self._real
+        self.pet.close()
+        self.db.close()
+        os.environ.pop('READINGSNAIL_DATA_DIR', None)
+        self._tmp.cleanup()
+
+    def _settings_panel(self, **kw):
+        from readingsnail.pet.panels import SettingsPanel
+        return SettingsPanel(self.pet.root, journal=self.journal,
+                             settings=self.settings, db_path=self.db_path,
+                             data_dir=self.data_dir, owner=self.pet, **kw)
+
+    def test_설정_창이_열린다(self):
+        panel = self._settings_panel()
+        try:
+            self.pet.root.update()
+            self.assertEqual(panel.scale_var.get(), '1.0')
+        finally:
+            panel.close()
+
+    def test_크기를_고르면_설정에_남는다(self):
+        asked: list = []
+        panel = self._settings_panel(on_scale=asked.append)
+        try:
+            panel.scale_var.set('0.75')
+            panel._apply_scale()
+            self.assertEqual(self.settings.get('pet.scale'), '0.75')
+            self.assertEqual(asked, [0.75])
+        finally:
+            panel.close()
+
+    def _pump(self, panel, seconds: float = 8.0) -> None:
+        """배경 일감이 끝날 때까지 UI 를 돌린다."""
+        import time
+        deadline = time.time() + seconds
+        while time.time() < deadline and panel._working:
+            self.pet.root.update()
+            time.sleep(0.02)
+        self.pet.root.update()
+
+    def test_백업_단추가_실제로_백업을_만든다(self):
+        from readingsnail.services import backup
+        self.journal.add_entry('지킬 기록')
+        panel = self._settings_panel()
+        try:
+            panel._backup()
+            self._pump(panel)
+            found = backup.list_backups(self.data_dir)
+            self.assertTrue(found)
+            self.assertIn('백업 1개', panel.backup_note.cget('text'))
+            self.assertTrue(any(kind == 'info' for kind, _ in self.shown))
+        finally:
+            panel.close()
+
+    def test_백업은_UI_스레드를_붙들지_않는다(self):
+        # 기록이 많으면 파일을 베끼는 데 시간이 든다. 그동안 창이 살아 있어야 한다.
+        panel = self._settings_panel()
+        try:
+            panel._backup()
+            self.assertTrue(panel._working, '배경으로 넘기지 않았다')
+            self.pet.root.update()          # 얼지 않는다
+            self._pump(panel)
+            self.assertFalse(panel._working)
+        finally:
+            panel.close()
+
+    def test_내보내기도_배경에서_돈다(self):
+        from pathlib import Path as _Path
+        book = self.journal.add_book('월든')
+        self.journal.add_entry('숲으로 간 이유', book_id=book.book_id)
+        target = _Path(self._tmp.name) / '기록.md'
+        panel = self._settings_panel()
+        try:
+            import tkinter.filedialog as fd
+            saved = fd.asksaveasfilename
+            fd.asksaveasfilename = lambda *a, **k: str(target)
+            try:
+                panel._export('md')
+                self.assertTrue(panel._working, '배경으로 넘기지 않았다')
+                self._pump(panel)
+            finally:
+                fd.asksaveasfilename = saved
+            self.assertTrue(target.is_file())
+            self.assertIn('월든', target.read_text(encoding='utf-8'))
+        finally:
+            panel.close()
+
+    def test_일감이_도는_중에_창을_닫아도_죽지_않는다(self):
+        # 늦게 끝난 스레드가 닫힌 창을 만지면 Tcl_AsyncDelete 로 프로세스가 죽는다.
+        panel = self._settings_panel()
+        panel._backup()
+        panel.close()                        # 끝나기 전에 닫는다
+        import time
+        deadline = time.time() + 3
+        while time.time() < deadline:
+            self.pet.root.update()           # TclError 가 나면 안 된다
+            time.sleep(0.02)
+
+    def test_인증키가_설정에_남는다(self):
+        panel = self._settings_panel()
+        try:
+            panel.cert_var.set('  my-key  ')
+            panel._save_cert()
+            self.assertEqual(self.settings.get('catalog.nl_cert_key'), 'my-key')
+        finally:
+            panel.close()
+
+    def test_비Windows에서_자동_시작을_켜면_안내만_한다(self):
+        from readingsnail.services import autostart
+        if autostart.supported():
+            self.skipTest('Windows 에서는 다른 경로다')
+        panel = self._settings_panel()
+        try:
+            panel.autostart_var.set(True)
+            panel._apply_autostart()
+            self.assertTrue(self.shown, '아무 안내도 없이 무시했다')
+            self.assertFalse(panel.autostart_var.get())
+        finally:
+            panel.close()
+
+    def test_주간_요약이_열린다(self):
+        from readingsnail.pet.panels import WeeklyPanel
+        book = self.journal.add_book('월든')
+        self.journal.add_entry('이번 주 기록', book_id=book.book_id)
+        panel = WeeklyPanel(self.pet.root, self.journal, owner=self.pet)
+        try:
+            self.pet.root.update()
+            text = panel.body.get('1.0', 'end')
+            self.assertIn('기록 1건', text)
+            self.assertIn('월든', text)
+        finally:
+            panel.close()
+
+    def test_조용한_주도_말이_된다(self):
+        from readingsnail.pet.panels import WeeklyPanel
+        panel = WeeklyPanel(self.pet.root, self.journal, owner=self.pet)
+        try:
+            self.assertIn('조용', panel.body.get('1.0', 'end'))
+        finally:
+            panel.close()
+
+
+class Tray(unittest.TestCase):
+    """트레이 메뉴는 pystray 스레드에서 불린다. Tk 를 건드리면 안 된다."""
+
+    def test_pystray가_없으면_조용히_실패한다(self):
+        from readingsnail.pet.tray import TrayIcon
+        tray = TrayIcon()
+        try:
+            self.assertIn(tray.show(), (True, False))
+        finally:
+            tray.hide()
+
+    def test_이벤트는_큐로만_전달된다(self):
+        from readingsnail.pet.tray import QUIT, RESTORE, TrayIcon
+        seen: list = []
+        tray = TrayIcon(on_event=seen.append)
+        tray._emit(RESTORE)
+        tray._emit(QUIT)
+        self.assertEqual(tray.drain(), [RESTORE, QUIT])
+        self.assertEqual(seen, [RESTORE, QUIT])
+        self.assertEqual(tray.drain(), [])
+
+    def test_콜백이_터져도_큐는_남는다(self):
+        from readingsnail.pet.tray import RESTORE, TrayIcon
+
+        def boom(_event):
+            raise RuntimeError('터짐')
+
+        tray = TrayIcon(on_event=boom)
+        tray._emit(RESTORE)
+        self.assertEqual(tray.drain(), [RESTORE])
+
+    def test_올리지_않고_내려도_안전하다(self):
+        from readingsnail.pet.tray import TrayIcon
+        tray = TrayIcon()
+        tray.hide()
+        tray.hide()

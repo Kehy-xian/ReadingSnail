@@ -19,7 +19,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from .db import Database
+from .db import Database, StorageError
 
 BOOK_STATUSES = ('reading', 'completed', 'wishlist', 'paused')
 ENTRY_KINDS = ('quote', 'note')
@@ -74,6 +74,21 @@ class Entry:
     page: str | None
     created_at: str
     has_embedding: bool
+
+
+
+def _must(value, what: str, key: object):
+    """방금 쓴 것을 다시 읽지 못했다.
+
+    `assert` 로 두면 두 가지가 나쁘다. `python -O` 로 돌리면 검사 자체가 사라져
+    None 이 그대로 흘러나가고, 걸릴 때는 까닭 없는 `AssertionError` 만 뜬다.
+    실제로 걸린다 — 앱이 도는 중에 백업으로 되돌리면 방금 쓴 줄이 통째로
+    갈린 파일에 남는다. 그때 사용자에게 무슨 일인지는 말해 줘야 한다.
+    """
+    if value is None:
+        raise StorageError(f'{what}을 저장한 뒤 다시 읽지 못했습니다 ({key}). '
+                           '기록 파일이 도중에 바뀌었을 수 있습니다.')
+    return value
 
 
 def _book(row: sqlite3.Row) -> Book:
@@ -182,9 +197,7 @@ class Journal:
             )
             if cur.rowcount != 1:
                 raise KeyError(book_id)
-        book = self.get_book(book_id)
-        assert book is not None
-        return book
+        return _must(self.get_book(book_id), '책', book_id)
 
     def update_book(self, book_id: str, **fields: object) -> Book:
         """제목·저자·표지 등을 고친다. 상태는 set_status 로만 바꾼다."""
@@ -208,9 +221,7 @@ class Journal:
             cur = con.execute(f'UPDATE books SET {", ".join(sets)} WHERE book_id=?', args)
             if cur.rowcount != 1:
                 raise KeyError(book_id)
-        book = self.get_book(book_id)
-        assert book is not None
-        return book
+        return _must(self.get_book(book_id), '책', book_id)
 
     def delete_book(self, book_id: str) -> int:
         """책 정보만 지운다. 그 책에 딸린 기록은 book_id 가 NULL 이 되어 살아남는다.
@@ -251,9 +262,7 @@ class Journal:
                 'VALUES (?,?,?,?,?,?)',
                 (entry_id, book, kind, body, _clean(page), now),
             )
-        entry = self.get_entry(entry_id)
-        assert entry is not None
-        return entry
+        return _must(self.get_entry(entry_id), '기록', entry_id)
 
     def get_entry(self, entry_id: str) -> Entry | None:
         with self.db.connect() as con:
@@ -306,9 +315,7 @@ class Journal:
             )
             if cur.rowcount != 1:
                 raise KeyError(entry_id)
-        entry = self.get_entry(entry_id)
-        assert entry is not None
-        return entry
+        return _must(self.get_entry(entry_id), '기록', entry_id)
 
     def delete_entry(self, entry_id: str) -> None:
         with self.db.write() as con:

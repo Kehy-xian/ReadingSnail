@@ -90,6 +90,9 @@ class PetWindow:
         on_add_book: Callable[[], None] | None = None,
         on_shelf: Callable[[], None] | None = None,
         on_props: Callable[[], None] | None = None,
+        on_weekly: Callable[[], None] | None = None,
+        on_settings: Callable[[], None] | None = None,
+        on_tray: Callable[[], None] | None = None,
         sprites: SpriteCache | None = None,
         resource_root: str | Path | None = None,
         data_dir: str | Path | None = None,
@@ -103,6 +106,9 @@ class PetWindow:
         self.on_add_book = on_add_book
         self.on_shelf = on_shelf
         self.on_props = on_props
+        self.on_weekly = on_weekly
+        self.on_settings = on_settings
+        self.on_tray = on_tray
         # 스프라이트가 없으면 벡터로 그린다. 원화가 한 상태씩 들어와도
         # 그 상태만 교체되고 나머지는 그대로 벡터다(SPRITE_GUIDE_KO.md).
         self.on_quit = on_quit
@@ -164,8 +170,11 @@ class PetWindow:
         self.menu.add_command(label='책 등록', command=lambda: self._call(self.on_add_book))
         self.menu.add_command(label='내 서재', command=lambda: self._call(self.on_library))
         self.menu.add_command(label='책장', command=lambda: self._call(self.on_shelf))
+        self.menu.add_command(label='이번 주', command=lambda: self._call(self.on_weekly))
         self.menu.add_separator()
         self.menu.add_command(label='소품', command=lambda: self._call(self.on_props))
+        self.menu.add_command(label='설정', command=lambda: self._call(self.on_settings))
+        self.menu.add_command(label='집에 보내기', command=lambda: self._call(self.on_tray))
         self.menu.add_separator()
         self.menu.add_command(label='종료', command=self.close)
         self.root.protocol('WM_DELETE_WINDOW', self.close)

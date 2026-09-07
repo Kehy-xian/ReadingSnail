@@ -394,6 +394,23 @@ class ConcurrentCovers(unittest.TestCase):
         self.assertEqual(len(files), 1)
         self.assertFalse([f for f in files if '.part' in f.name], '임시 파일이 남았다')
 
+    def test_받는_중인_임시_파일을_표지라고_돌려주지_않는다(self):
+        # 경합 없이 그 상황만 만들어 둔다. `glob(f'{stem}.*')` 로 찾으면
+        # 다른 스레드가 쓰는 중인 .part 를 잡아, 곧 사라질 경로가 DB 에 박힌다.
+        import hashlib
+
+        from readingsnail.services.covers import covers_dir
+        url = 'https://example.org/same.png'
+        stem = hashlib.sha256(url.encode('utf-8')).hexdigest()[:24]
+        folder = covers_dir(self.tmp)
+        (folder / f'{stem}.png.deadbeef.part').write_bytes(PNG[:4])   # 절반만 쓰인 파일
+
+        got = download_cover(url, self.tmp, opener=lambda r, timeout=None:
+                             FakeResponse(PNG))
+        self.assertNotIn('.part', got.name, f'받는 중인 파일을 돌려줬다: {got.name}')
+        self.assertTrue(got.is_file())
+        self.assertEqual(got.read_bytes(), PNG)
+
 
 class MalformedResponses(unittest.TestCase):
     """서버가 무엇을 보낼지 모른다. 무엇이 와도 검색이 죽지 않아야 한다."""

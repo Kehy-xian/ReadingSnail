@@ -47,6 +47,24 @@ def _extension(data: bytes) -> str:
     raise CoverError('이미지 파일이 아니다')
 
 
+# 우리가 실제로 저장하는 확장자. 받다 만 파일(.part)과 구분하는 데 쓴다.
+_EXTENSIONS = tuple(dict.fromkeys(ext for _magic, ext in _MAGIC))
+
+
+def _existing_cover(folder: Path, stem: str) -> Path | None:
+    """이미 받아 둔 표지. **glob 을 쓰지 않는다.**
+
+    `folder.glob(f'{stem}.*')` 는 다른 스레드가 쓰는 중인
+    `<stem>.png.<uuid>.part` 까지 잡는다. 그걸 표지라고 돌려주면 곧 rename 으로
+    사라질 경로가 DB 에 박힌다 — 책을 연달아 등록할 때 실제로 일어났다.
+    """
+    for ext in _EXTENSIONS:
+        candidate = folder / f'{stem}{ext}'
+        if candidate.is_file():
+            return candidate
+    return None
+
+
 def covers_dir(data_dir: str | Path) -> Path:
     path = Path(data_dir) / 'covers'
     path.mkdir(parents=True, exist_ok=True)
@@ -71,7 +89,8 @@ def download_cover(url: str, data_dir: str | Path, *, opener=None) -> Path:
 
     folder = covers_dir(data_dir)
     stem = hashlib.sha256(address.encode('utf-8')).hexdigest()[:24]
-    for existing in folder.glob(f'{stem}.*'):
+    existing = _existing_cover(folder, stem)
+    if existing is not None:
         return existing                     # 이미 받아 뒀다
 
     request = Request(address, headers={'User-Agent': USER_AGENT,

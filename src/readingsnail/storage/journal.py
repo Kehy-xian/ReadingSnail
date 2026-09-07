@@ -26,6 +26,15 @@ ENTRY_KINDS = ('quote', 'note')
 
 TIME_FORMAT = '%Y-%m-%d %H:%M:%S'
 
+# 눈에 보이지 않는 문자들. str.strip() 은 이것들을 지우지 않아서,
+# 폭 0 공백 하나만 붙여넣으면 '빈 기록'이 그대로 저장된다.
+_INVISIBLE = '\u200b\u200c\u200d\u2060\ufeff\u00ad'
+
+
+def is_blank(text: str) -> bool:
+    """사람 눈에 아무것도 없는가."""
+    return not str(text or '').strip().strip(_INVISIBLE).strip()
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).strftime(TIME_FORMAT)
@@ -225,7 +234,7 @@ class Journal:
     ) -> Entry:
         """기록을 남긴다. 임베딩은 받지 않는다 — 저장이 분석보다 먼저다."""
         body = str(body or '').strip()
-        if not body:
+        if is_blank(body):
             raise ValueError('빈 기록은 저장하지 않는다')
         if kind not in ENTRY_KINDS:
             raise ValueError(f'알 수 없는 기록 종류: {kind}')
@@ -288,7 +297,7 @@ class Journal:
         옛 문장을 기준으로 엉뚱한 기록을 이어붙인다. (FTS 인덱스는 트리거가 알아서 따라온다.)
         """
         body = str(body or '').strip()
-        if not body:
+        if is_blank(body):
             raise ValueError('빈 기록으로 바꿀 수 없다')
         with self.db.write() as con:
             cur = con.execute(

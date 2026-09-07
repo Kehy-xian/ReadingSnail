@@ -359,3 +359,41 @@ class StartupResilience(unittest.TestCase):
                 self.assertEqual(len(search.search_entries(con, '달팽이')), 1)
         finally:
             db.close()
+
+
+class InvisibleText(unittest.TestCase):
+    """눈에 보이지 않는 문자만 있는 기록은 빈 기록이다.
+
+    str.strip() 은 폭 0 공백(U+200B)이나 BOM(U+FEFF)을 지우지 않는다.
+    붙여넣기로 섞여 들어오면 '빈 기록'이 그대로 저장된다.
+    """
+
+    def setUp(self) -> None:
+        self.db = Database(':memory:')
+        self.journal = Journal(self.db)
+
+    def tearDown(self) -> None:
+        self.db.close()
+
+    def test_보이지_않는_문자만_있으면_거부한다(self):
+        for bad in ('​', '‌‍', '﻿', '⁠',
+                    '  ​  ', '　', '­'):
+            with self.assertRaises(ValueError, msg=repr(bad)):
+                self.journal.add_entry(bad)
+
+    def test_보이는_글자가_있으면_저장한다(self):
+        entry = self.journal.add_entry('진짜 기록​')
+        self.assertIn('진짜 기록', entry.body)
+
+    def test_고칠_때도_같은_기준(self):
+        entry = self.journal.add_entry('원래 문장')
+        with self.assertRaises(ValueError):
+            self.journal.revise_entry(entry.entry_id, '​')
+        self.assertEqual(self.journal.get_entry(entry.entry_id).body, '원래 문장')
+
+    def test_is_blank(self):
+        from readingsnail.storage.journal import is_blank
+        self.assertTrue(is_blank(''))
+        self.assertTrue(is_blank('​ \n'))
+        self.assertFalse(is_blank('가'))
+        self.assertFalse(is_blank('​가​'))

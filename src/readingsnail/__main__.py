@@ -224,8 +224,12 @@ def main(argv: list[str] | None = None) -> int:
 
     def on_write(book_id: str | None = None) -> None:
         from .pet.panels import WritePanel
-        # 같은 창을 두 번 열면 두 창이 같은 초안을 두고 다툰다. 하나만 띄운다.
-        pet.show_once('write', lambda: WritePanel(
+        # **책마다 창 하나.** 같은 책의 창을 두 번 열면 둘이 같은 draft_key 를
+        # 두고 다투지만, 다른 책이면 초안도 다르므로 따로 떠야 한다.
+        # 키를 'write' 하나로 두면 책장에서 책을 눌러도 앞서 열린 창이 돌아와
+        # 책이 안 잡힌다.
+        key = f'write:{book_id or ""}'
+        pet.show_once(key, lambda: WritePanel(
             pet.root, journal, drafts, book_id=book_id, owner=pet,
             on_saved=companion.note_saved))
 

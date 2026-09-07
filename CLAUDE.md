@@ -50,7 +50,7 @@ onnxruntime (임베딩 인코딩 전용) / PyInstaller onedir / Inno Setup
 **원화는 아직 없다.** 자리표시 팩으로 파이프라인만 검증했다
 (`python tools/render_placeholder_pack.py` — 저장소에 커밋하지 않는다).
 
-동작이 검증된 것 — `python -m unittest discover -s tests` (314건 통과)
+동작이 검증된 것 — `python -m unittest discover -s tests` (322건 통과)
 GUI 테스트는 tkinter·디스플레이가 없으면 자동으로 건너뛴다.
 
 | 있는 것 | 파일 |
@@ -241,6 +241,10 @@ journal.add_entry('숲으로 간 이유', book_id=book.book_id, kind='quote', pa
 기록 창을 두 개 열면 둘이 같은 `draft_key` 를 두고 다투다 나중에 닫은 쪽이
 앞의 글을 덮어쓴다.
 
+**키는 초안 단위로 잡는다.** 기록 창은 `write:{book_id}` 다. 키를 `write` 하나로
+두면 책장에서 책을 눌러도 앞서 열린 창이 돌아와 **책이 안 잡힌다.** 다른 책이면
+초안도 다르므로 창이 따로 떠야 맞다. `show_once` 가 닫힌 창의 자리를 비운다.
+
 **패널은 `_Panel` 을 상속한다 — 한 겹까지만.** 그 위에 또 겹을 쌓지 않는다.
 `_Panel` 이 Toplevel·스타일 적용·`<Destroy>` 정리를 맡고, 하위는 `_cleanup()` 에서
 자기 Tk 자원만 거둔다.
@@ -259,6 +263,9 @@ ttk 전체가 오염된다(테스트 23건이 이걸로 깨졌다). `_try_bootst
 
 ## 함정 두 가지
 
+6. **빈 기록 판정은 `journal.is_blank()` 로 한다.** `str.strip()` 은 폭 0
+   공백(U+200B)이나 BOM 을 지우지 않는다. 붙여넣기로 섞여 들어오면 눈에
+   아무것도 없는 '기록'이 그대로 저장된다.
 1. **검색은 `storage/search.py`를 거친다.** `entries_fts MATCH`를 직접 부르면
    trigram 특성상 2자 이하 질의('독서', '기록')가 전부 0건이 된다. 조용히 실패한다.
 0. **기록 본문을 고치면 임베딩을 반드시 무효화한다.** `Journal.revise_entry()`가

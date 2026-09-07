@@ -1083,3 +1083,76 @@ class ShelfAndProps(unittest.TestCase):
         self.assertIsNotNone(panel._refresh_after)
         panel.close()
         self.assertIsNone(panel._refresh_after)
+
+
+@unittest.skipUnless(GUI, REASON)
+class WritePanelPerBook(unittest.TestCase):
+    """책마다 기록 창 하나. 키를 하나로 두면 책장에서 책을 눌러도
+    앞서 열린 창이 돌아와 책이 안 잡힌다."""
+
+    def setUp(self) -> None:
+        import os
+        from tempfile import TemporaryDirectory
+        self._tmp = TemporaryDirectory()
+        os.environ['READINGSNAIL_DATA_DIR'] = self._tmp.name
+
+        from readingsnail.paths import default_db_path
+        from readingsnail.pet.window import PetWindow
+        from readingsnail.storage.db import open_database
+        from readingsnail.storage.drafts import Drafts
+        from readingsnail.storage.journal import Journal
+
+        self.db = open_database(default_db_path())
+        self.journal = Journal(self.db)
+        self.drafts = Drafts(self.db)
+        self.pet = PetWindow(start_at=(120, 120))
+
+    def tearDown(self) -> None:
+        import os
+        self.pet.close()
+        self.db.close()
+        os.environ.pop('READINGSNAIL_DATA_DIR', None)
+        self._tmp.cleanup()
+
+    def _open(self, book_id=None):
+        from readingsnail.pet.panels import WritePanel
+        return self.pet.show_once(
+            f'write:{book_id or ""}',
+            lambda: WritePanel(self.pet.root, self.journal, self.drafts,
+                               book_id=book_id, owner=self.pet))
+
+    def test_책마다_다른_창이_뜬다(self):
+        first = self.journal.add_book('월든')
+        second = self.journal.add_book('사피엔스')
+        blank, one, two = self._open(), self._open(first.book_id), self._open(second.book_id)
+        self.assertEqual(len({id(blank), id(one), id(two)}), 3)
+        self.assertEqual(one.book_choice.get(), '월든')
+        self.assertEqual(two.book_choice.get(), '사피엔스')
+
+    def test_같은_책은_같은_창이다(self):
+        book = self.journal.add_book('월든')
+        self.assertIs(self._open(book.book_id), self._open(book.book_id))
+
+    def test_책마다_초안이_섞이지_않는다(self):
+        first = self.journal.add_book('월든')
+        second = self.journal.add_book('사피엔스')
+        one, two = self._open(first.book_id), self._open(second.book_id)
+        one.text.insert('1.0', '월든에 쓰던 글')
+        two.text.insert('1.0', '사피엔스에 쓰던 글')
+        one.close()
+        two.close()
+        self.assertEqual(
+            self.drafts.load(self.drafts.key_for_book(first.book_id)).body,
+            '월든에 쓰던 글')
+        self.assertEqual(
+            self.drafts.load(self.drafts.key_for_book(second.book_id)).body,
+            '사피엔스에 쓰던 글')
+
+    def test_닫힌_창의_자리는_비운다(self):
+        """책마다 키가 생기므로 그냥 두면 쌓인다."""
+        for i in range(12):
+            book = self.journal.add_book(f'책 {i}')
+            panel = self._open(book.book_id)
+            panel.close()
+        self._open()
+        self.assertLessEqual(len(self.pet._panels), 2)

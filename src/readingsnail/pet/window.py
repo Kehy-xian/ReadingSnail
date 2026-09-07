@@ -449,7 +449,19 @@ class PetWindow:
                 pass
         panel = factory()
         self._panels[key] = panel
+        self._prune_panels()
         return panel
+
+    def _prune_panels(self) -> None:
+        """닫힌 창의 자리를 비운다. 책마다 키가 생기므로 그냥 두면 쌓인다."""
+        for key, panel in list(self._panels.items()):
+            top = getattr(panel, 'top', None)
+            try:
+                alive = top is not None and bool(top.winfo_exists())
+            except tk.TclError:
+                alive = False
+            if not alive:
+                self._panels.pop(key, None)
 
     def register_closer(self, closer: Callable[[], None]) -> None:
         """창이 닫히기 전에 불릴 정리 함수. 패널이 자기 초안을 저장할 기회다."""

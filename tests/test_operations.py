@@ -282,6 +282,15 @@ class Backup(unittest.TestCase):
         backup.prune_backups(self.dir, reason='version')
         self.assertTrue(mine.exists())
 
+    def test_백업_폴더를_못_만들면_BackupError_다(self):
+        # 날 OSError 가 부팅까지 올라가면 백업 그물 하나 때문에 앱이 안 켜진다.
+        blocker = self.dir / 'blocked'
+        blocker.write_bytes(b'')                  # 폴더 자리에 파일이 있다
+        with self.assertRaises(backup.BackupError):
+            backup.backup_dir(blocker)
+        with self.assertRaises(backup.BackupError):
+            backup.backup_for_version(self.db_path, blocker, '9.9.9', stored_version='0')
+
     def test_목록은_최근_것부터(self):
         backup.make_backup(self.db_path, self.dir, reason='manual')
         found = backup.list_backups(self.dir)
@@ -371,6 +380,39 @@ class Installer(unittest.TestCase):
         self.assertIn('PrivilegesRequired=lowest', self.script)
 
 
+class BuildSpec(unittest.TestCase):
+    """PyInstaller 를 여기서 돌릴 수는 없다. 대신 spec 이 약속한 것을 글로 확인한다."""
+
+    def setUp(self) -> None:
+        self.spec = (ROOT / 'ReadingSnail.spec').read_text(encoding='utf-8')
+
+    def test_진입점은_패키지의_main_이_아니다(self):
+        # 패키지 __main__.py 를 스크립트로 주면 상대 import 가 ImportError 로 죽는다.
+        self.assertNotIn("'src/readingsnail/__main__.py'", self.spec)
+        self.assertIn("'launcher.py'", self.spec)
+        self.assertTrue((ROOT / 'launcher.py').is_file())
+
+    def test_launcher_는_절대_경로로_패키지를_부른다(self):
+        text = (ROOT / 'launcher.py').read_text(encoding='utf-8')
+        self.assertIn('from readingsnail.__main__ import main', text)
+
+    def test_패키지_안의_비_py_파일이_전부_datas_에_있다(self):
+        # Path(__file__) 로 읽는 파일은 datas 에 넣지 않으면 번들에서 빠진다.
+        # 빠지면 설치본이 첫 부팅에서 죽는다.
+        src = ROOT / 'src' / 'readingsnail'
+        needed = [p.relative_to(src).as_posix() for p in src.rglob('*')
+                  if p.is_file() and p.suffix not in ('.py', '.pyc')]
+        self.assertTrue(needed)
+        for rel in needed:
+            with self.subTest(file=rel):
+                folder = rel.rsplit('/', 1)[0]
+                self.assertTrue(rel in self.spec or f"'src/readingsnail/{folder}'" in self.spec,
+                                f'{rel} 이 spec datas 에 없다')
+
+    def test_콘솔_창을_띄우지_않는다(self):
+        self.assertIn('console=False', self.spec)
+
+
 class WeeklySummary(unittest.TestCase):
     """SPEC 6항: 알림 팝업으로 띄우지 않는다. 재촉하지 않는다."""
 
@@ -421,3 +463,56 @@ class WeeklySummary(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)
+
+
+class _FakePet:
+    def __init__(self) -> None:
+        self.said: list[str] = []
+
+    def say(self, text: str) -> None:
+        self.said.append(text)
+
+    def call_later(self, _ms: int, _fn) -> None:
+        pass
+
+
+class CompanionEcho(unittest.TestCase):
+    """되살리기는 **방금 쓴 기록**의 것이다."""
+
+    def setUp(self) -> None:
+        from readingsnail.__main__ import Companion
+        self.db = Database(':memory:')
+        self.journal = Journal(self.db)
+        self.companion = Companion(_FakePet(), self.db, self.journal, encoder=None)
+
+    def tearDown(self) -> None:
+        self.companion.stop()
+        self.db.close()
+
+    def _timers(self) -> int:
+        with self.companion._timer_lock:
+            return len(self.companion._timers)
+
+    def test_옛_기록이_인코딩돼도_되살리기_타이머를_걸지_않는다(self):
+        # 전작 이전·모델 교체 직후 수천 건이 한꺼번에 인코딩된다. 그때마다
+        # 타이머를 걸면 스레드 수천 개가 일제히 말을 뱉고 종료가 멈춘다.
+        old = self.journal.add_entry('오래된 기록', created_at='2020-01-01 00:00:00')
+        self.companion._encoded(old.entry_id)
+        self.assertEqual(self._timers(), 0)
+
+    def test_방금_쓴_기록은_되살리기_타이머가_걸린다(self):
+        fresh = self.journal.add_entry('방금 쓴 기록')
+        self.companion._encoded(fresh.entry_id)
+        self.assertEqual(self._timers(), 1)
+
+    def test_없는_기록은_넘긴다(self):
+        self.companion._encoded('없는-id')
+        self.assertEqual(self._timers(), 0)
+
+    def test_시작_안_된_타이머가_있어도_stop_은_죽지_않는다(self):
+        import threading
+        # 저장 직후 종료: _encoded 가 타이머를 등록하는 사이 stop() 이 올 수 있다.
+        never_started = threading.Timer(60, lambda: None)
+        with self.companion._timer_lock:
+            self.companion._timers.add(never_started)
+        self.companion.stop()                  # RuntimeError 가 나면 안 된다

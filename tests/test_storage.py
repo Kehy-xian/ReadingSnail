@@ -427,6 +427,36 @@ else:
         self.assertEqual(out.stdout.strip(), '막힘', out.stderr)
 
 
+class BrokenInstall(unittest.TestCase):
+    """설치가 덜 끝났거나 경로가 이상할 때. 조용히 엉뚱한 곳에 쓰거나 날 예외로 죽지 않는다."""
+
+    def test_경로가_None_이면_StorageError(self):
+        # str(None) 은 'None' — 현재 폴더에 'None' 파일을 만들고 거기 기록을 쌓는다.
+        for bad in (None, '', '   '):
+            with self.subTest(path=bad):
+                with self.assertRaises(StorageError):
+                    Database(bad)
+        self.assertFalse(Path('None').exists())
+
+    def test_스키마_파일이_없으면_StorageError(self):
+        from readingsnail.storage import db as db_mod
+        original = db_mod.SCHEMA_PATH
+        db_mod.SCHEMA_PATH = Path('/nonexistent/schema.sql')
+        try:
+            with self.assertRaises(StorageError) as caught:
+                Database(':memory:')
+        finally:
+            db_mod.SCHEMA_PATH = original
+        self.assertIn('설치', str(caught.exception))
+
+    def test_잠금_오류는_까닭을_말한다(self):
+        from readingsnail.storage.db import _explain
+        import sqlite3
+        self.assertIn('다른 프로그램', _explain(sqlite3.OperationalError('database is locked')))
+        self.assertIn('쓸 수 없다', _explain(sqlite3.OperationalError('attempt to write a readonly database')))
+        self.assertIn('손상', _explain(sqlite3.DatabaseError('file is not a database')))
+
+
 class InvisibleText(unittest.TestCase):
     """눈에 보이지 않는 문자만 있는 기록은 빈 기록이다.
 

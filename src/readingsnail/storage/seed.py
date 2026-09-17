@@ -60,7 +60,10 @@ def seed_quotes(conn: sqlite3.Connection, path: Path | None = None,
     """
     try:
         quotes = load_seed_file(path)
-    except (OSError, ValueError, KeyError, json.JSONDecodeError):
+    except (OSError, ValueError, KeyError, TypeError, AttributeError,
+            json.JSONDecodeError):
+        # TypeError·AttributeError 는 JSON 이 '모양'만 틀렸을 때 난다(목록이 아니라
+        # 사전, 항목이 문자열…). 이것도 시드 파일 손상이다.
         if strict:
             raise
         return 0

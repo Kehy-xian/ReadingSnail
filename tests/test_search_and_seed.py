@@ -142,6 +142,21 @@ class QuoteSeed(unittest.TestCase):
         with self.assertRaises(ValueError):
             seed.add_user_quote(self.conn, 'user-2', '출처 없음', '  ')
 
+    def test_모양이_틀린_시드_파일로도_앱은_켜진다(self):
+        # JSON 문법은 맞는데 모양이 다르다(목록이 아니라 사전, 항목이 문자열).
+        # 이것도 시드 손상이다 — TypeError 로 부팅이 죽으면 안 된다.
+        import json
+        import tempfile
+        from pathlib import Path
+        for shape in ({'quotes': {'a': 1}}, {'quotes': ['문자열']}, ['최상위가 목록'], 42):
+            with self.subTest(shape=shape):
+                with tempfile.TemporaryDirectory() as tmp:
+                    path = Path(tmp) / 'quotes.json'
+                    path.write_text(json.dumps(shape, ensure_ascii=False), encoding='utf-8')
+                    self.assertEqual(seed.seed_quotes(self.conn, path), 0)
+                    with self.assertRaises((ValueError, KeyError, TypeError, AttributeError)):
+                        seed.seed_quotes(self.conn, path, strict=True)
+
 
 class ColdStart(unittest.TestCase):
     """기록 0건일 때 달팽이가 벙어리가 되지 않아야 한다."""

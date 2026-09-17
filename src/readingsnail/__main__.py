@@ -18,6 +18,7 @@ import sqlite3
 import sys
 import threading
 from collections import OrderedDict
+from datetime import datetime, timezone
 
 from .nlp.encoder import default_encoder
 from .paths import (default_data_dir, default_db_path, legacy_db_path,
@@ -30,7 +31,7 @@ from .services.embedding import EmbeddingWorker
 from .services.speaker import Speaker, prune_utterance_log
 from .storage.db import StorageError, open_database
 from .storage.drafts import Drafts
-from .storage.journal import Journal
+from .storage.journal import TIME_FORMAT, Journal
 from .storage.migrate import MigrationError, legacy_looks_migratable, migrate
 from .storage.settings import Settings
 from .theme import load_bundled_fonts
@@ -45,6 +46,9 @@ SETTING_VERSION = 'app.version'
 
 # 트레이 이벤트를 확인하는 주기.
 TRAY_POLL_MS = 400
+
+# 이보다 오래된 기록은 인코딩돼도 되살리지 않는다. 되살리기는 '방금 쓴 글'의 것이다.
+ECHO_MAX_AGE_SEC = 30 * 60
 
 
 class Companion:
@@ -100,7 +104,8 @@ class Companion:
         for timer in timers:
             timer.cancel()
         for timer in timers:
-            timer.join(timeout=2.0)
+            if timer.is_alive():        # 시작 안 된 스레드는 join 하면 RuntimeError
+                timer.join(timeout=2.0)
         self.worker.stop()
 
     # ── UI 스레드 ─────────────────────────────────────
@@ -140,6 +145,11 @@ class Companion:
         """**배경 스레드에서 불린다.** 화면도 root.after 도 건드리지 않는다."""
         if self._stopped or entry_id in self._echoed:
             return
+        if not self._is_fresh(entry_id):
+            # 전작 이전·모델 교체 직후에는 수천 건이 한꺼번에 인코딩된다. 그때마다
+            # 타이머를 걸면 스레드 수천 개가 90~300초 뒤 일제히 되살리기를 뱉고,
+            # 종료는 그 합류를 기다리다 멈춘다. 되살리기는 **방금 쓴 기록**의 것이다.
+            return
         self._echoed[entry_id] = None
         while len(self._echoed) > 500:
             self._echoed.popitem(last=False)
@@ -151,7 +161,22 @@ class Companion:
             if self._stopped:
                 return
             self._timers.add(timer)
-        timer.start()
+            # start 는 잠금 안에서. 밖에서 하면 stop() 이 아직 시작 안 된 타이머를
+            # join 하다 RuntimeError 로 죽는다 — 저장 직후 종료하면 실제로 걸린다.
+            timer.start()
+
+    def _is_fresh(self, entry_id: str) -> bool:
+        """ECHO_MAX_AGE_SEC 안에 쓴 기록인가. 못 읽으면 아니라고 본다."""
+        try:
+            entry = self.journal.get_entry(entry_id)
+            if entry is None:
+                return False
+            written = datetime.strptime(entry.created_at, TIME_FORMAT).replace(
+                tzinfo=timezone.utc)
+        except (sqlite3.DatabaseError, ValueError, TypeError):
+            return False
+        age = (datetime.now(timezone.utc) - written).total_seconds()
+        return 0 <= age <= ECHO_MAX_AGE_SEC
 
     def _echo_in_background(self, entry_id: str) -> None:
         """타이머 스레드. 최근접 탐색과 DB 쓰기까지 여기서 끝내고 큐에만 넣는다."""
@@ -233,13 +258,14 @@ def main(argv: list[str] | None = None) -> int:
     try:
         backup.backup_for_version(db_path, data_dir, __version__,
                                   stored_version=stored_version)
-    except backup.BackupError as exc:
+    except (backup.BackupError, OSError) as exc:
+        # 백업은 그물이지 본체가 아니다. 못 만들었다고 기록을 못 열게 하지 않는다.
         print(f'버전 백업을 만들지 못했습니다: {exc}', file=sys.stderr)
 
     try:
         db = open_database(db_path)
     except StorageError as exc:
-        print(f'기록을 열 수 없습니다: {exc}', file=sys.stderr)
+        _fatal(f'기록을 열 수 없습니다.\n\n{exc}\n\n기록 파일: {db_path}')
         return 1
 
     journal = Journal(db)
@@ -342,6 +368,27 @@ def main(argv: list[str] | None = None) -> int:
     poll_tray()
     pet.run()
     return 0
+
+
+def _fatal(message: str) -> None:
+    """부팅을 못 할 때 사용자에게 **보이게** 알린다.
+
+    설치본은 console=False 라 stderr 가 어디에도 안 보인다. 아무 창도 없이 끝나면
+    사용자는 앱이 고장 났는지 켜지지 않았는지도 모른다. '저장 안 되는 채로 도는
+    달팽이'만큼이나 '말없이 안 켜지는 달팽이'도 사용자를 속이는 것이다.
+    """
+    print(message, file=sys.stderr)
+    try:
+        import tkinter as tk
+        from tkinter import messagebox
+        root = tk.Tk()
+        root.withdraw()
+        try:
+            messagebox.showerror('책 읽는 달팽이', message, parent=root)
+        finally:
+            root.destroy()
+    except Exception:
+        pass            # 화면조차 없으면 stderr 가 전부다
 
 
 def _read_scale(settings) -> float:

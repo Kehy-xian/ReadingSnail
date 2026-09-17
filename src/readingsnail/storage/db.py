@@ -36,10 +36,32 @@ def _sqlite_version() -> tuple[int, ...]:
     return tuple(int(p) for p in sqlite3.sqlite_version.split('.'))
 
 
+
+def _explain(exc: BaseException) -> str:
+    """SQLite 오류를 사용자가 할 수 있는 일로 옮긴다.
+
+    '스키마를 적용할 수 없다' 한 문장으로 뭉개면 잠깐의 잠금을 손상으로 오해해
+    백업 복원으로 달려간다.
+    """
+    text = str(exc)
+    low = text.lower()
+    if 'locked' in low or 'busy' in low:
+        return '다른 프로그램이 기록 파일을 쓰고 있다 (' + text + ')'
+    if 'readonly' in low or 'unable to open' in low or 'permission' in low:
+        return '기록 폴더에 쓸 수 없다 (' + text + ')'
+    if 'not a database' in low or 'malformed' in low or 'corrupt' in low:
+        return '기록 파일이 손상됐다 (' + text + ')'
+    return text
+
+
 class Database:
     """기록이 사는 SQLite 파일 하나를 감싼다."""
 
     def __init__(self, path: str | Path, *, apply_schema: bool = True):
+        if path is None or not str(path).strip():
+            # str(None) 은 'None' 이다. 조용히 현재 폴더에 'None' 파일을 만들고
+            # 기록을 거기 쌓는다 — 나중에 찾을 수 없는 곳에.
+            raise StorageError('기록 파일 경로가 비어 있다')
         self.path = str(path)
         if self.path != ':memory:':
             folder = Path(self.path).expanduser().parent
@@ -158,13 +180,18 @@ class Database:
                 f'SQLite {".".join(map(str, MIN_SQLITE))} 이상이 필요하다 '
                 f'(현재 {sqlite3.sqlite_version}). FTS5 trigram 토크나이저를 쓴다.'
             )
-        script = SCHEMA_PATH.read_text(encoding='utf-8')
+        try:
+            script = SCHEMA_PATH.read_text(encoding='utf-8')
+        except OSError as exc:
+            # 설치가 덜 끝난 것이다(번들에 schema.sql 이 빠졌거나 손상). 날
+            # FileNotFoundError 는 부팅 코드가 잡지 못해 창 없이 죽는다.
+            raise StorageError(f'스키마 파일이 없다 — 설치가 온전하지 않다: {exc}') from exc
         try:
             with self.connect() as con:
                 con.executescript(script)
                 con.commit()
         except sqlite3.DatabaseError as exc:
-            raise StorageError('스키마를 적용할 수 없다') from exc
+            raise StorageError(f'스키마를 적용할 수 없다: {_explain(exc)}') from exc
 
     def schema_version(self) -> str | None:
         with self.connect() as con:

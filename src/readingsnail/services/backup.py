@@ -53,7 +53,12 @@ class BackupFile:
 
 def backup_dir(data_dir: str | Path) -> Path:
     folder = Path(data_dir) / BACKUP_DIRNAME
-    folder.mkdir(parents=True, exist_ok=True)
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        # 백업 폴더 하나 못 만든다고 부팅이 통째로 죽으면 안 된다. 부르는 쪽이
+        # BackupError 만 잡으므로 여기서 감싼다.
+        raise BackupError(f'백업 폴더를 만들 수 없다: {folder} ({exc})') from exc
     return folder
 
 

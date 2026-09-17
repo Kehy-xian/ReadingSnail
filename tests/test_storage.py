@@ -413,18 +413,18 @@ from readingsnail.storage.journal import Journal
 journal = Journal(Database(":memory:"))
 journal.get_entry = lambda _id: None
 try:
-    journal.add_entry("기록")
+    journal.add_entry("record")
 except StorageError:
-    print("막힘")
+    print("BLOCKED")          # 콘솔 인코딩에 기대지 않게 ASCII 로 찍는다
 else:
-    print("통과함")
+    print("PASSED-THROUGH")
 """
         with TemporaryDirectory() as tmp:
             path = Path(tmp) / 'probe.py'
             path.write_text(script, encoding='utf-8')
             out = subprocess.run([_sys.executable, '-O', str(path)],
                                  capture_output=True, text=True, cwd=str(ROOT))
-        self.assertEqual(out.stdout.strip(), '막힘', out.stderr)
+        self.assertEqual(out.stdout.strip(), 'BLOCKED', out.stderr)
 
 
 class BrokenInstall(unittest.TestCase):
@@ -448,6 +448,46 @@ class BrokenInstall(unittest.TestCase):
         finally:
             db_mod.SCHEMA_PATH = original
         self.assertIn('설치', str(caught.exception))
+
+    def test_설정_도중_터진_연결은_닫고_나간다(self):
+        """손상된 파일에서 PRAGMA journal_mode=WAL 이 터진다. 그때 연결을 닫지
+        않으면 **Windows 에서 그 파일이 잠긴다** — 손상된 기록을 백업으로 되돌릴
+        수도, 치울 수도 없게 된다. Linux 는 참조 계수가 즉시 거둬서 안 보인다
+        (CI 의 Windows 에서 실제로 걸렸다).
+        """
+        import sqlite3 as _sqlite3
+        from readingsnail.storage import db as db_mod
+        closed: list[bool] = []
+        real_connect = _sqlite3.connect
+
+        class Watched:
+            def __init__(self, con):
+                self._con = con
+
+            def __getattr__(self, name):
+                return getattr(self._con, name)
+
+            def __setattr__(self, name, value):
+                if name == '_con':
+                    object.__setattr__(self, name, value)
+                else:
+                    setattr(self._con, name, value)
+
+            def close(self):
+                closed.append(True)
+                self._con.close()
+
+        with TemporaryDirectory() as tmp:
+            broken = Path(tmp) / 'broken.sqlite3'
+            broken.write_bytes(b'not a database' * 100)
+            db_mod.sqlite3.connect = lambda *a, **k: Watched(real_connect(*a, **k))
+            try:
+                with self.assertRaises(StorageError):
+                    Database(broken)
+            finally:
+                db_mod.sqlite3.connect = real_connect
+            self.assertTrue(closed, '설정이 터졌는데 연결을 닫지 않았다')
+            broken.unlink()          # Windows 에서 여기가 깨졌다
 
     def test_잠금_오류는_까닭을_말한다(self):
         from readingsnail.storage.db import _explain

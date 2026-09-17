@@ -20,7 +20,22 @@ from readingsnail.pet import art                                   # noqa: E402
 from readingsnail.pet.validation import summarize, validate_pack   # noqa: E402
 
 
+def _use_utf8_console() -> None:
+    """한글을 찍다 죽지 않게 한다.
+
+    영문 Windows 의 콘솔 기본 인코딩은 cp1252 라 한글을 못 담는다. 안내문 한 줄
+    찍다가 UnicodeEncodeError 로 도구가 통째로 죽는다 — 실제로 CI(영문 Windows)
+    에서 걸렸다. 한국어 Windows(cp949)에서는 안 보이는 결함이다.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding='utf-8', errors='replace')
+        except (AttributeError, ValueError, OSError):
+            pass        # 포장된 앱은 stdout 이 없다. 그때는 찍을 곳도 없다.
+
+
 def main(argv: list[str] | None = None) -> int:
+    _use_utf8_console()
     parser = argparse.ArgumentParser(description='스프라이트 팩 규격 검사')
     parser.add_argument('root', type=Path, help='<slug>_<state>_NN.png 가 있는 폴더')
     parser.add_argument('--slug', default=art.SLUG)

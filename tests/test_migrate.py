@@ -233,7 +233,12 @@ class Migration(unittest.TestCase):
 
     def test_전작_DB가_아니면_거부한다(self):
         other = self.tmp / 'other.sqlite3'
-        sqlite3.connect(other).executescript('CREATE TABLE x(y)')
+        # 닫는다. Windows 는 열려 있는 파일을 지우지 못해 tearDown 이 깨진다.
+        con = sqlite3.connect(other)
+        try:
+            con.executescript('CREATE TABLE x(y)')
+        finally:
+            con.close()
         self.assertFalse(legacy_looks_migratable(other))
         with self.assertRaises(MigrationError):
             migrate(self.db, other)

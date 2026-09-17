@@ -86,7 +86,22 @@ def installed_states(moved: list[Path], states, *, slug: str = art.SLUG) -> tupl
     return tuple(s for s in states if names & _state_names(s, slug))
 
 
+def _use_utf8_console() -> None:
+    """한글을 찍다 죽지 않게 한다.
+
+    영문 Windows 의 콘솔 기본 인코딩은 cp1252 라 한글을 못 담는다. 안내문 한 줄
+    찍다가 UnicodeEncodeError 로 도구가 통째로 죽는다 — 실제로 CI(영문 Windows)
+    에서 걸렸다. 한국어 Windows(cp949)에서는 안 보이는 결함이다.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding='utf-8', errors='replace')
+        except (AttributeError, ValueError, OSError):
+            pass        # 포장된 앱은 stdout 이 없다. 그때는 찍을 곳도 없다.
+
+
 def main(argv: list[str] | None = None) -> int:
+    _use_utf8_console()
     parser = argparse.ArgumentParser(description='달팽이 원화 설치')
     parser.add_argument('source', type=Path, help='그림이 있는 폴더')
     parser.add_argument('--states', default='', help='쉼표 구분. 비우면 갖춰진 것 전부')

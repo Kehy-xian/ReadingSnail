@@ -105,11 +105,19 @@ class Database:
         # check_same_thread=False 는 메모리 DB 의 공유 연결 때문에 필요하다.
         # 파일 DB 는 호출한 스레드에서 열고 그 스레드에서 닫으므로 공유되지 않는다.
         con = sqlite3.connect(self.path, timeout=5.0, check_same_thread=False)
-        con.row_factory = sqlite3.Row
-        con.execute('PRAGMA foreign_keys=ON')
-        con.execute('PRAGMA busy_timeout=5000')
-        if self.path != ':memory:':
-            con.execute('PRAGMA journal_mode=WAL')
+        try:
+            con.row_factory = sqlite3.Row
+            con.execute('PRAGMA foreign_keys=ON')
+            con.execute('PRAGMA busy_timeout=5000')
+            if self.path != ':memory:':
+                # **손상된 파일은 여기서 터진다.** 닫지 않으면 예외의 트레이스백이
+                # 프레임을 붙들고, 그 프레임이 연결을 붙든다. Windows 는 열려 있는
+                # 파일을 지우지도 옮기지도 못하므로 손상된 기록 파일을 백업으로
+                # 되돌릴 수도, 치울 수도 없게 된다.
+                con.execute('PRAGMA journal_mode=WAL')
+        except BaseException:
+            con.close()
+            raise
         return con
 
     def _open_write(self) -> sqlite3.Connection | None:

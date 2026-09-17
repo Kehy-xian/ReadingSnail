@@ -238,6 +238,14 @@ def main(argv: list[str] | None = None) -> int:
     from . import __version__
     from .pet.window import PetWindow, enable_dpi_awareness
 
+    # 안내문에 한글이 들어간다. 영문 Windows 콘솔(cp1252)에서 `python -m` 으로
+    # 돌리면 그걸 찍다가 UnicodeEncodeError 로 죽는다.
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding='utf-8', errors='replace')
+        except (AttributeError, ValueError, OSError):
+            pass        # 포장된 앱(console=False)은 stdout 이 아예 없다
+
     # 달팽이를 두 마리 띄우지 않는다. 자동 시작과 바로가기가 겹칠 수 있다.
     guard = single_instance.acquire()
     if not guard.acquired:

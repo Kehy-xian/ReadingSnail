@@ -164,7 +164,14 @@ class Failures(unittest.TestCase):
             raise RuntimeError('on_quit 이 터졌다')
 
         pet = PetWindow(start_at=(50, 50), on_quit=boom)
-        pet.close()                                   # 예외가 새면 안 된다
+        # close() 가 트레이스백을 stderr 로 남기는 것은 **의도한 동작**이다.
+        # 다만 그대로 두면 CI 가 빨간 주석으로 띄워 진짜 실패처럼 보인다.
+        import contextlib
+        import io
+        noise = io.StringIO()
+        with contextlib.redirect_stderr(noise):
+            pet.close()                               # 예외가 새면 안 된다
+        self.assertIn('on_quit', noise.getvalue())    # 그래도 남기긴 했다
         with self.assertRaises(tk.TclError):
             pet.root.winfo_exists()                   # 진짜로 부서졌다
 

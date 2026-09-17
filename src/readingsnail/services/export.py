@@ -27,6 +27,8 @@ import io
 from datetime import datetime, timezone
 from pathlib import Path
 
+from ..storage.journal import local_day
+
 CSV_COLUMNS = ('created_at', 'kind', 'book_title', 'book_author', 'page',
                'body', 'book_status', 'isbn13', 'entry_id', 'book_id')
 KIND_KO = {'quote': '필사', 'note': '생각'}
@@ -85,7 +87,7 @@ def to_markdown(journal, *, title: str = '책 읽는 달팽이 — 기록',
                 out.append(f'*{" · ".join(meta)}*')
             out.append('')
 
-        head = entry.created_at[:10]
+        head = local_day(entry.created_at)
         if entry.page:
             head += f' · {entry.page}'
         head += f' · {KIND_KO.get(entry.kind, entry.kind)}'
@@ -133,7 +135,10 @@ def write_csv(journal, path: str | Path, **kw) -> Path:
     """UTF-8 BOM 을 붙인다. 안 붙이면 엑셀에서 한글이 깨진다."""
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(to_csv(journal, **kw), encoding='utf-8-sig')
+    # newline='' 이어야 한다. 기본값이면 Windows 가 셀 안의 줄바꿈까지 \r\n 으로
+    # 바꾸고(\r\n 은 \r\r\n 이 된다) 엑셀이 줄을 잘못 센다.
+    with target.open('w', encoding='utf-8-sig', newline='') as handle:
+        handle.write(to_csv(journal, **kw))
     return target
 
 

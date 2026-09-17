@@ -22,11 +22,17 @@ from tkinter import messagebox, ttk
 from typing import Callable
 
 from ..storage.db import StorageError
+from ..storage.journal import local_day
 from ..theme import PAD_L, PAD_M, PAD_S, PALETTE, font
 from .styling import apply as apply_style
 from .styling import text_defaults
 
 BOOK_NONE = '(책 없이)'
+# 기록 창의 책 목록 상한. 콤보박스라 이보다 많으면 어차피 못 고른다 — 서재에서 골라 온다.
+MAX_BOOK_CHOICES = 2000
+# 쓰던 글을 이만큼 손 놓으면 초안으로 남긴다. 창을 닫을 때만 남기면 전원이
+# 나가거나 프로세스가 죽을 때 통째로 사라진다.
+DRAFT_AUTOSAVE_MS = 2000
 # 책장에 한 번에 그릴 최대 권수. 넘으면 요약에 사실대로 적는다.
 MAX_SHELF_BOOKS = 2000
 STATUS_LABELS = (('읽는 중', 'reading'), ('읽고 싶은', 'wishlist'),
@@ -107,15 +113,15 @@ class WritePanel(_Panel):
         head = ttk.Frame(outer)
         head.pack(fill='x', pady=(0, PAD_S))
         ttk.Label(head, text='책').pack(side='left')
-        self.books = {b.display_name: b.book_id for b in journal.list_books(limit=200)}
+        # **표시 이름을 키로 쓰면 제목·저자가 같은 책 두 권이 하나로 겹친다** — 기록이
+        # 조용히 엉뚱한 책으로 간다. 이름을 고유하게 만들고 id 로 잇는다.
+        self.books = _unique_labels(journal.list_books(limit=MAX_BOOK_CHOICES))
         self.book_box = ttk.Combobox(head, textvariable=self.book_choice, state='readonly',
                                      values=[BOOK_NONE, *self.books])
         self.book_box.pack(side='left', fill='x', expand=True, padx=(PAD_S, PAD_M))
+        self._autosave_after: str | None = None
         if book_id:
-            for name, ident in self.books.items():
-                if ident == book_id:
-                    self.book_choice.set(name)
-                    break
+            self._choose_book(book_id)
 
         ttk.Label(head, text='쪽').pack(side='left')
         self.page = ttk.Entry(head, width=8)
@@ -133,7 +139,7 @@ class WritePanel(_Panel):
         self.text = tk.Text(self.top, wrap='word', height=12, undo=True,
                             **text_defaults(self.top))
         self.text.pack(in_=outer, fill='both', expand=True)
-        self.text.bind('<KeyRelease>', lambda _e: self._count())
+        self.text.bind('<KeyRelease>', lambda _e: self._typed())
         self.text.bind('<Control-Return>', lambda _e: (self.save(), 'break')[1])
 
         buttons = ttk.Frame(outer)
@@ -150,14 +156,49 @@ class WritePanel(_Panel):
         if saved:
             self.text.insert('1.0', saved.body)
             self.kind.set(saved.kind)
+            if saved.page:
+                self.page.insert(0, saved.page)
+            if not book_id and saved.book_id:
+                self._choose_book(saved.book_id)      # 콤보에서 골랐던 책
         self._count()
         self.text.focus_set()
+
+    def _choose_book(self, book_id: str) -> None:
+        for name, ident in self.books.items():
+            if ident == book_id:
+                self.book_choice.set(name)
+                return
+
+    def _chosen_book(self) -> str | None:
+        return self.books.get(self.book_choice.get())
 
     def _count(self) -> None:
         try:
             self.counter.config(text=f'{len(self._body())}자')
         except tk.TclError:
             pass
+
+    def _typed(self) -> None:
+        self._count()
+        # 손을 놓은 지 DRAFT_AUTOSAVE_MS 지나면 초안으로 남긴다. 글자마다 쓰지 않는다.
+        if self._autosave_after is not None:
+            try:
+                self.top.after_cancel(self._autosave_after)
+            except tk.TclError:
+                pass
+        try:
+            self._autosave_after = self.top.after(DRAFT_AUTOSAVE_MS, self._autosave)
+        except tk.TclError:
+            self._autosave_after = None
+
+    def _autosave(self) -> None:
+        self._autosave_after = None
+        if self._disposed or self._submitted:
+            return
+        try:
+            self._save_draft()
+        except (StorageError, sqlite3.Error):
+            pass            # 잠깐의 잠금이다. 다음 손 놓을 때 다시 쓴다.
 
     def _body(self) -> str:
         return self.text.get('1.0', 'end').strip()
@@ -169,16 +210,19 @@ class WritePanel(_Panel):
         try:
             body = self._body()
             kind = self.kind.get()
+            page = self.page.get().strip() or None
+            chosen = self._chosen_book()
         except (tk.TclError, AttributeError):
             return
-        self.drafts.save(self.draft_key, body=body, book_id=self.book_id, kind=kind)
+        self.drafts.save(self.draft_key, body=body, book_id=self.book_id or chosen,
+                         kind=kind, page=page)
 
     def save(self) -> None:
         body = self._body()
         if not body:
             messagebox.showinfo('책 읽는 달팽이', '남길 글이 없습니다.', parent=self.top)
             return
-        chosen = self.books.get(self.book_choice.get())
+        chosen = self._chosen_book()
         try:
             self.journal.add_entry(body, book_id=chosen, kind=self.kind.get(),
                                    page=self.page.get().strip() or None)
@@ -197,6 +241,12 @@ class WritePanel(_Panel):
             on_saved()
 
     def _cleanup(self) -> None:
+        if self._autosave_after is not None:
+            try:
+                self.top.after_cancel(self._autosave_after)
+            except tk.TclError:
+                pass
+            self._autosave_after = None
         # **owner 가 있든 없든 초안은 남긴다.** owner 등록에만 기대면 owner 없이
         # 만든 패널에서 쓰던 글이 사라진다.
         if not self._submitted:
@@ -211,14 +261,17 @@ class LibraryPanel(_Panel):
     """책과 기록을 훑어본다. 책을 고르면 그 책의 기록이 시간순으로 보인다."""
 
     title = '내 서재'
-    size = '760x520'
+    size = '760x560'
 
     def __init__(self, parent: tk.Misc, journal, *, owner: object | None = None,
-                 on_write: Callable[[str], None] | None = None):
+                 on_write: Callable[[str], None] | None = None,
+                 on_status_changed: Callable[[str, str], None] | None = None):
         super().__init__(parent, owner=owner)
         self.journal = journal
         self.on_write = on_write
+        self.on_status_changed = on_status_changed
         self.books: dict[str, str] = {}
+        self.status_var = tk.StringVar()
 
         outer = ttk.Frame(self.top, padding=PAD_M)
         outer.pack(fill='both', expand=True)
@@ -258,6 +311,19 @@ class LibraryPanel(_Panel):
                                        style='Accent.TButton', state='disabled',
                                        command=self._write_here)
         self.write_button.pack(fill='x')
+        # 상태 바꾸기 — 이게 없으면 등록 때 '읽는 중' 으로 넣은 책은 영영 책장에 못 간다.
+        # 완독 표시가 SPEC 5(완독 → 꿀꺽 → 책장)의 출발점이다.
+        status_row = ttk.Frame(right)
+        status_row.pack(fill='x', pady=(PAD_S, 0))
+        ttk.Label(status_row, text='상태').pack(side='left')
+        self.status_box = ttk.Combobox(status_row, textvariable=self.status_var,
+                                       state='disabled', width=10,
+                                       values=[label for label, _ in STATUS_LABELS])
+        self.status_box.pack(side='left', padx=(PAD_S, PAD_S))
+        self.status_box.bind('<<ComboboxSelected>>', lambda _e: self._apply_status())
+        self.delete_button = ttk.Button(status_row, text='책 지우기', state='disabled',
+                                        command=self._delete_book)
+        self.delete_button.pack(side='right')
         panes.add(right, weight=2)
 
         self.refresh()
@@ -267,18 +333,25 @@ class LibraryPanel(_Panel):
             self.tree.delete(item)
         self.books.clear()
         counts = self.journal.entry_counts_by_book()
-        for book in self.journal.list_books(limit=500):
+        shown = 0
+        for book in self.journal.list_books(limit=MAX_BOOK_CHOICES):
             item = self.tree.insert('', 'end', text=book.display_name,
                                     values=(STATUS_KO.get(book.status, book.status),
                                             counts.get(book.book_id, 0)))
             self.books[item] = book.book_id
+            shown += 1
         loose = counts.get(None, 0)
         if loose:
             item = self.tree.insert('', 'end', text='(책 없는 기록)',
                                     values=('—', loose))
             self.books[item] = ''
         total = self.journal.count_entries()
-        self.summary.config(text=f'책 {self.journal.count_books()}권 · 기록 {total}건')
+        book_count = self.journal.count_books()
+        # 잘렸으면 잘렸다고 말한다. 조용히 절반만 보여주면 책이 사라진 줄 안다.
+        books_text = (f'책 {book_count}권 중 {shown}권 표시' if shown < book_count
+                      else f'책 {book_count}권')
+        self.summary.config(text=f'{books_text} · 기록 {total}건')
+        self._sync_actions()
 
     def _selected_book(self) -> str | None:
         picked = self.tree.selection()
@@ -292,11 +365,9 @@ class LibraryPanel(_Panel):
             return
         if book_id:
             entries = self.journal.entries_for_book(book_id)
-            self.write_button.config(state='normal')
         else:
-            entries = [e for e in self.journal.recent_entries(limit=300)
-                       if e.book_id is None]
-            self.write_button.config(state='disabled')
+            entries = self.journal.loose_entries()
+        self._sync_actions()
 
         self.detail.config(state='normal')
         self.detail.delete('1.0', 'end')
@@ -305,9 +376,69 @@ class LibraryPanel(_Panel):
         for entry in entries:
             mark = '“' if entry.kind == 'quote' else '·'
             page = f'  {entry.page}' if entry.page else ''
-            self.detail.insert('end', f'{entry.created_at[:10]}{page}\n')
+            self.detail.insert('end', f'{local_day(entry.created_at)}{page}\n')
             self.detail.insert('end', f'{mark} {entry.body}\n\n')
         self.detail.config(state='disabled')
+
+    def _sync_actions(self) -> None:
+        """고른 책이 있을 때만 기록·상태·지우기가 산다."""
+        book_id = self._selected_book()
+        book = self.journal.get_book(book_id) if book_id else None
+        state = 'normal' if book is not None else 'disabled'
+        self.write_button.config(state=state)
+        self.delete_button.config(state=state)
+        self.status_box.config(state='readonly' if book is not None else 'disabled')
+        self.status_var.set(STATUS_KO.get(book.status, book.status) if book else '')
+
+    def _apply_status(self) -> None:
+        book_id = self._selected_book()
+        wanted = {label: value for label, value in STATUS_LABELS}.get(self.status_var.get())
+        if not book_id or wanted is None:
+            return
+        book = self.journal.get_book(book_id)
+        if book is None or book.status == wanted:
+            return
+        try:
+            self.journal.set_status(book_id, wanted)
+        except (ValueError, KeyError, StorageError, sqlite3.Error) as exc:
+            messagebox.showerror('책 읽는 달팽이', f'상태를 바꾸지 못했습니다.\n{exc}',
+                                 parent=self.top)
+            return
+        self.refresh()
+        self._reselect(book_id)
+        if self.on_status_changed is not None:
+            self.on_status_changed(book_id, wanted)
+
+    def _delete_book(self) -> None:
+        book_id = self._selected_book()
+        book = self.journal.get_book(book_id) if book_id else None
+        if book is None:
+            return
+        count = self.journal.entry_counts_by_book().get(book_id, 0)
+        note = (f'\n이 책의 기록 {count}건은 지워지지 않고 \'(책 없는 기록)\' 에 남습니다.'
+                if count else '')
+        if not messagebox.askyesno('책 읽는 달팽이',
+                                   f'\'{book.display_name}\' 을(를) 서재에서 지울까요?{note}',
+                                   parent=self.top):
+            return
+        try:
+            self.journal.delete_book(book_id)
+        except (KeyError, StorageError, sqlite3.Error) as exc:
+            messagebox.showerror('책 읽는 달팽이', f'지우지 못했습니다.\n{exc}',
+                                 parent=self.top)
+            return
+        self.refresh()
+        self._sync_actions()
+
+    def _reselect(self, book_id: str) -> None:
+        for item, ident in self.books.items():
+            if ident == book_id:
+                try:
+                    self.tree.selection_set(item)
+                    self.tree.see(item)
+                except tk.TclError:
+                    pass
+                return
 
     def _write_here(self) -> None:
         book_id = self._selected_book()
@@ -316,6 +447,7 @@ class LibraryPanel(_Panel):
 
     def _cleanup(self) -> None:
         self.books.clear()
+        self.status_var = None
 
 
 class AddBookPanel(_Panel):
@@ -485,7 +617,8 @@ class AddBookPanel(_Panel):
                 publisher=self.publisher_entry.get().strip() or None,
                 isbn13=self.isbn_entry.get().strip() or None,
                 status=self.status_var.get(), source=source)
-        except ValueError as exc:
+        except (ValueError, StorageError, sqlite3.Error, RuntimeError) as exc:
+            # 잠금·디스크 오류가 대화상자 없이 새면 등록된 줄 알고 창을 닫는다.
             messagebox.showerror('책 읽는 달팽이', f'등록하지 못했습니다.\n{exc}',
                                  parent=self.top)
             return
@@ -614,7 +747,7 @@ class ShelfPanel(_Panel):
             self.summary.config(text=f'{total}권')
 
     def _draw_spine(self, slot) -> None:
-        fill = slot.tint or PALETTE['paper_deep']
+        fill = _valid_color(slot.tint) or PALETTE['paper_deep']
         # 기울임은 사각형 대신 다각형으로 낸다. Canvas 사각형은 회전하지 않는다.
         offset = 0 if slot.lying else int(slot.height * slot.tilt / 90)
         points = [
@@ -709,13 +842,29 @@ class PropsPanel(_Panel):
         self.vars = {}
 
 
+def _valid_color(value: object) -> str | None:
+    """'#RRGGBB' 면 그대로, 아니면 None. 표지에서 뽑은 색은 DB 를 거쳐 오므로
+    전작 이전·손상으로 이상한 값이 섞일 수 있다. 한 줄 때문에 책장이 안 열리면 안 된다."""
+    text = str(value or '').strip()
+    if len(text) == 7 and text[0] == '#':
+        try:
+            int(text[1:], 16)
+            return text
+        except ValueError:
+            return None
+    return None
+
+
 def _readable_on(background: str) -> str:
     """그 바탕 위에서 읽히는 글자색을 고른다. 책등 색은 표지마다 다르다."""
     from ..theme import contrast
-    if contrast(PALETTE['ink'], background) >= contrast(PALETTE['on_accent'],
-                                                        background):
+    try:
+        if contrast(PALETTE['ink'], background) >= contrast(PALETTE['on_accent'],
+                                                            background):
+            return PALETTE['ink']
+        return PALETTE['on_accent']
+    except (ValueError, TypeError):
         return PALETTE['ink']
-    return PALETTE['on_accent']
 
 
 class WeeklyPanel(_Panel):
@@ -1011,3 +1160,19 @@ def _backup_worker(db_path, data_dir, done: queue.Queue) -> None:
         done.put((False, f'백업하지 못했습니다.\n{exc}'))
         return
     done.put((True, f'백업했습니다.\n{made}'))
+
+
+def _unique_labels(books) -> dict[str, str]:
+    """표시 이름 → book_id. 같은 이름이 있으면 (2), (3) 을 붙여 구분한다."""
+    labels: dict[str, str] = {}
+    seen: dict[str, int] = {}
+    for book in books:
+        base = book.display_name
+        n = seen.get(base, 0) + 1
+        seen[base] = n
+        label = base if n == 1 else f'{base} ({n})'
+        while label in labels:                 # 제목에 이미 ' (2)' 가 붙어 있던 경우
+            n += 1
+            label = f'{base} ({n})'
+        labels[label] = book.book_id
+    return labels

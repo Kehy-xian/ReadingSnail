@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
-from ..storage.journal import TIME_FORMAT
+from ..storage.journal import TIME_FORMAT, local_day
 
 
 @dataclass(frozen=True)
@@ -54,7 +54,7 @@ def summarize(journal, *, now: datetime | None = None, days: int = 7) -> WeekSum
         active = con.execute(
             'SELECT b.title AS title, count(e.entry_id) AS n FROM entries e '
             'JOIN books b ON b.book_id = e.book_id '
-            'WHERE e.created_at >= ? AND e.created_at <= ? '
+            "WHERE e.created_at >= ? AND e.created_at <= ? AND b.status = 'reading' "
             'GROUP BY e.book_id ORDER BY n DESC LIMIT 5', (start, end)).fetchall()
 
     return WeekSummary(
@@ -71,7 +71,7 @@ def summarize(journal, *, now: datetime | None = None, days: int = 7) -> WeekSum
 
 def as_lines(summary: WeekSummary) -> list[str]:
     """화면에 그대로 뿌릴 수 있는 줄들. 재촉하는 말은 넣지 않는다."""
-    lines = [f'{summary.start[:10]} ~ {summary.end[:10]}', '']
+    lines = [f'{local_day(summary.start)} ~ {local_day(summary.end)}', '']
     if summary.quiet:
         lines.append('이번 주는 조용했습니다.')
         lines.append('')

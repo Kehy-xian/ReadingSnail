@@ -37,6 +37,21 @@ def _sqlite_version() -> tuple[int, ...]:
 
 
 
+# schema.sql 은 CREATE ... IF NOT EXISTS 라 이미 만들어진 표에는 새 컬럼이 안 닿는다.
+# 나중에 보탠 컬럼은 여기 적는다. 있으면 넘어가고 없으면 ALTER 로 붙인다.
+_EXTRA_COLUMNS: dict[str, tuple[tuple[str, str], ...]] = {
+    'drafts': (('page', 'TEXT'),),
+}
+
+
+def _ensure_columns(con: sqlite3.Connection) -> None:
+    for table, columns in _EXTRA_COLUMNS.items():
+        present = {str(row[1]) for row in con.execute(f'PRAGMA table_info({table})')}
+        for name, decl in columns:
+            if name not in present:
+                con.execute(f'ALTER TABLE {table} ADD COLUMN {name} {decl}')
+
+
 def _explain(exc: BaseException) -> str:
     """SQLite 오류를 사용자가 할 수 있는 일로 옮긴다.
 
@@ -189,6 +204,7 @@ class Database:
         try:
             with self.connect() as con:
                 con.executescript(script)
+                _ensure_columns(con)
                 con.commit()
         except sqlite3.DatabaseError as exc:
             raise StorageError(f'스키마를 적용할 수 없다: {_explain(exc)}') from exc

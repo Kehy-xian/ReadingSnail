@@ -288,7 +288,17 @@ def main(argv: list[str] | None = None) -> int:
     def on_library() -> None:
         from .pet.panels import LibraryPanel
         pet.show_once('library', lambda: LibraryPanel(
-            pet.root, journal, owner=pet, on_write=on_write))
+            pet.root, journal, owner=pet, on_write=on_write,
+            on_status_changed=on_status_changed))
+
+    def on_status_changed(book_id: str, status: str) -> None:
+        """서재에서 상태를 바꿨다. 완독이면 꿀꺽 → 책장 연출(SPEC 5)."""
+        if status != 'completed':
+            return
+        book = journal.get_book(book_id)
+        if book is not None:
+            pet.say(f'『{book.title}』 다 읽었구나.')
+        pet.celebrate()
 
     def on_shelf() -> None:
         from .pet.panels import ShelfPanel

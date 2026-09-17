@@ -457,6 +457,79 @@ class BrokenInstall(unittest.TestCase):
         self.assertIn('손상', _explain(sqlite3.DatabaseError('file is not a database')))
 
 
+class AuditStorageFixes(Base):
+    """전체 감사에서 나온 저장소 결함들."""
+
+    def test_책_없는_기록에_닿는_문이_있다(self):
+        # entries_for_book(None) 은 'None' 문자열을 찾아 늘 0건이었고, 서재는 최근
+        # 300건만 걸러 썼다. 옛 책을 지우며 풀려난 기록은 어디서도 볼 수 없었다.
+        book = self.journal.add_book('지울 책')
+        old = self.journal.add_entry('오래된 기록', book_id=book.book_id,
+                                     created_at='2020-01-01 00:00:00')
+        for i in range(310):
+            self.journal.add_entry(f'최근 기록 {i}')
+        self.journal.delete_book(book.book_id)
+        loose = self.journal.loose_entries(limit=1000)
+        self.assertIn(old.entry_id, [e.entry_id for e in loose])
+        self.assertEqual(loose[0].entry_id, old.entry_id)       # 시간순
+
+    def test_등록하면서_다_읽음이면_finished_at_이_찍힌다(self):
+        book = self.journal.add_book('이미 읽은 책', status='completed')
+        self.assertIsNotNone(book.finished_at)
+        self.assertEqual(self.journal.count_books(status='completed'), 1)
+
+    def test_보이지_않는_제목은_등록되지_않는다(self):
+        with self.assertRaises(ValueError):
+            self.journal.add_book('\u200b\ufeff')
+
+    def test_초안이_쪽수를_기억한다(self):
+        drafts = Drafts(self.db)
+        drafts.save('quick', body='쓰다 만 글', page='p.31')
+        self.assertEqual(drafts.load('quick').page, 'p.31')
+        self.assertEqual(drafts.list_all()[0].page, 'p.31')
+
+    def test_옛_DB_의_drafts_표에_page_컬럼이_보태진다(self):
+        # schema.sql 은 CREATE IF NOT EXISTS 라 이미 만들어진 표에는 새 컬럼이 안 닿는다.
+        import sqlite3
+        with TemporaryDirectory() as tmp:
+            path = Path(tmp) / 'old.sqlite3'
+            con = sqlite3.connect(path)
+            con.execute('CREATE TABLE drafts (draft_key TEXT PRIMARY KEY, book_id TEXT, '
+                        "kind TEXT NOT NULL DEFAULT 'note', body TEXT NOT NULL DEFAULT '', "
+                        'updated_at TEXT NOT NULL)')
+            con.execute("INSERT INTO drafts VALUES ('quick', NULL, 'note', '옛 초안', '2025-01-01 00:00:00')")
+            con.commit(); con.close()
+            db = open_database(path)
+            try:
+                drafts = Drafts(db)
+                self.assertEqual(drafts.load('quick').body, '옛 초안')
+                drafts.save('quick', body='옛 초안', page='p.9')
+                self.assertEqual(drafts.load('quick').page, 'p.9')
+            finally:
+                db.close()
+
+    def test_표시_시각은_사용자_시간대다(self):
+        import os
+        import time
+        from readingsnail.storage.journal import local_day, to_local
+        if not hasattr(time, 'tzset'):
+            self.skipTest('tzset 이 없는 플랫폼')
+        before = os.environ.get('TZ')
+        os.environ['TZ'] = 'Asia/Seoul'
+        time.tzset()
+        try:
+            # 한국 시간 새벽 3시에 쓴 기록 — UTC 로는 전날 18시다.
+            self.assertEqual(local_day('2026-09-15 18:00:00'), '2026-09-16')
+            self.assertEqual(to_local('2026-09-15 18:00:00').hour, 3)
+            self.assertEqual(local_day('깨진 값'), '깨진 값')
+        finally:
+            if before is None:
+                os.environ.pop('TZ', None)
+            else:
+                os.environ['TZ'] = before
+            time.tzset()
+
+
 class InvisibleText(unittest.TestCase):
     """눈에 보이지 않는 문자만 있는 기록은 빈 기록이다.
 

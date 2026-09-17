@@ -75,6 +75,33 @@ class Export(unittest.TestCase):
             path = export.write_csv(self.journal, Path(tmp) / 'a.csv')
             self.assertTrue(path.read_bytes().startswith(b'\xef\xbb\xbf'))
 
+    def test_CSV_는_줄바꿈을_바꾸지_않고_쓴다(self):
+        # Windows 에서 기본 newline 은 셀 안의 \n 까지 \r\n 으로 바꾼다.
+        self.journal.add_entry('첫 줄\n둘째 줄')
+        with TemporaryDirectory() as tmp:
+            path = export.write_csv(self.journal, Path(tmp) / 'a.csv')
+            raw = path.read_bytes()
+        self.assertIn('첫 줄\n둘째 줄'.encode('utf-8'), raw)
+        self.assertNotIn(b'\r\r\n', raw)
+
+    def test_날짜는_사용자_시간대로_적는다(self):
+        import os
+        import time
+        if not hasattr(time, 'tzset'):
+            self.skipTest('tzset 이 없는 플랫폼')
+        before = os.environ.get('TZ')
+        os.environ['TZ'] = 'Asia/Seoul'
+        time.tzset()
+        try:
+            self.journal.add_entry('새벽에 쓴 글', created_at='2026-09-15 18:30:00')
+            self.assertIn('**2026-09-16', export.to_markdown(self.journal))
+        finally:
+            if before is None:
+                os.environ.pop('TZ', None)
+            else:
+                os.environ['TZ'] = before
+            time.tzset()
+
     def test_기록이_없어도_내보내진다(self):
         empty = Database(':memory:')
         try:
@@ -451,6 +478,15 @@ class WeeklySummary(unittest.TestCase):
         self.assertTrue(result.quiet)
         lines = summary.as_lines(result)
         self.assertTrue(any('조용' in line for line in lines))
+
+    def test_이어_읽는_중에는_읽는_중인_책만(self):
+        done = self.journal.add_book('다 읽은 책', status='completed')
+        self.journal.add_entry('마지막 기록', book_id=done.book_id)
+        reading = self.journal.add_book('읽는 책')
+        self.journal.add_entry('오늘 기록', book_id=reading.book_id)
+        titles = [t for t, _ in summary.summarize(self.journal).active]
+        self.assertIn('읽는 책', titles)
+        self.assertNotIn('다 읽은 책', titles)
 
     def test_재촉하지_않는다(self):
         book = self.journal.add_book('방치된 책', added_at='2020-01-01 00:00:00')

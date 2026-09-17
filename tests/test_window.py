@@ -1471,3 +1471,194 @@ class Tray(unittest.TestCase):
         tray = TrayIcon()
         tray.hide()
         tray.hide()
+
+
+@unittest.skipUnless(GUI, REASON)
+class AuditPanelFixes(unittest.TestCase):
+    """전체 감사에서 나온 패널 결함들."""
+
+    def setUp(self) -> None:
+        import os
+        from tempfile import TemporaryDirectory
+        self._tmp = TemporaryDirectory()
+        os.environ['READINGSNAIL_DATA_DIR'] = self._tmp.name
+        from readingsnail.paths import default_db_path
+        from readingsnail.pet import panels
+        from readingsnail.pet.window import PetWindow
+        from readingsnail.storage.db import open_database
+        from readingsnail.storage.drafts import Drafts
+        from readingsnail.storage.journal import Journal
+        self.db = open_database(default_db_path())
+        self.journal = Journal(self.db)
+        self.drafts = Drafts(self.db)
+        self.pet = PetWindow(start_at=(120, 120))
+        self.shown: list = []
+        self._real = (panels.messagebox.showinfo, panels.messagebox.showerror,
+                      panels.messagebox.askyesno)
+        panels.messagebox.showinfo = lambda *a, **k: self.shown.append(('info', a))
+        panels.messagebox.showerror = lambda *a, **k: self.shown.append(('error', a))
+        panels.messagebox.askyesno = lambda *a, **k: True
+
+    def tearDown(self) -> None:
+        import os
+        from readingsnail.pet import panels
+        (panels.messagebox.showinfo, panels.messagebox.showerror,
+         panels.messagebox.askyesno) = self._real
+        self.pet.close()
+        self.db.close()
+        os.environ.pop('READINGSNAIL_DATA_DIR', None)
+        self._tmp.cleanup()
+
+    def _pump(self, seconds: float) -> None:
+        import time
+        deadline = time.time() + seconds
+        while time.time() < deadline:
+            self.pet.root.update()
+            time.sleep(0.02)
+
+    # ── 기록 창 ──
+    def test_제목_저자가_같은_책_두_권이_따로_잡힌다(self):
+        # 표시 이름을 키로 쓰면 둘이 하나로 겹쳐 기록이 엉뚱한 책으로 갔다.
+        from readingsnail.pet.panels import WritePanel
+        first = self.journal.add_book('월든', author='소로')
+        second = self.journal.add_book('월든', author='소로')
+        panel = WritePanel(self.pet.root, self.journal, self.drafts)
+        try:
+            labels = list(panel.book_box.cget('values'))
+            self.assertEqual(len(set(labels)), len(labels))
+            self.assertEqual(set(panel.books.values()), {first.book_id, second.book_id})
+            panel._choose_book(second.book_id)
+            panel.text.insert('1.0', '둘째 권에 남긴다')
+            panel.save()
+        finally:
+            panel.close()
+        self.assertEqual(len(self.journal.entries_for_book(second.book_id)), 1)
+        self.assertEqual(len(self.journal.entries_for_book(first.book_id)), 0)
+
+    def test_초안이_고른_책과_쪽수를_기억한다(self):
+        from readingsnail.pet.panels import WritePanel
+        book = self.journal.add_book('월든')
+        panel = WritePanel(self.pet.root, self.journal, self.drafts)
+        panel._choose_book(book.book_id)
+        panel.page.insert(0, 'p.31')
+        panel.text.insert('1.0', '쓰다 만 글')
+        panel.close()
+        again = WritePanel(self.pet.root, self.journal, self.drafts)
+        try:
+            self.assertEqual(again._chosen_book(), book.book_id)
+            self.assertEqual(again.page.get(), 'p.31')
+            self.assertIn('쓰다 만 글', again.text.get('1.0', 'end'))
+        finally:
+            again.close()
+
+    def test_쓰는_중에도_초안이_남는다(self):
+        # 창을 닫을 때만 남기면 전원이 나가거나 프로세스가 죽을 때 통째로 사라진다.
+        from readingsnail.pet import panels
+        from readingsnail.pet.panels import WritePanel
+        saved = panels.DRAFT_AUTOSAVE_MS
+        panels.DRAFT_AUTOSAVE_MS = 100
+        panel = WritePanel(self.pet.root, self.journal, self.drafts)
+        try:
+            panel.text.insert('1.0', '아직 안 닫았다')
+            panel._typed()
+            self._pump(0.5)
+            draft = self.drafts.load(self.drafts.key_for_book(None))
+            self.assertIsNotNone(draft)
+            self.assertEqual(draft.body, '아직 안 닫았다')
+        finally:
+            panels.DRAFT_AUTOSAVE_MS = saved
+            panel.close()
+
+    # ── 서재 ──
+    def test_서재에서_완독으로_바꿀_수_있다(self):
+        # 이게 없으면 등록 때 '읽는 중' 으로 넣은 책은 영영 책장에 못 간다.
+        from readingsnail.pet.panels import LibraryPanel
+        book = self.journal.add_book('월든')
+        changed: list = []
+        panel = LibraryPanel(self.pet.root, self.journal,
+                             on_status_changed=lambda b, s: changed.append((b, s)))
+        try:
+            panel._reselect(book.book_id)
+            panel._show_entries()
+            self.assertEqual(str(panel.status_box.cget('state')), 'readonly')
+            panel.status_var.set('다 읽음')
+            panel._apply_status()
+        finally:
+            panel.close()
+        done = self.journal.get_book(book.book_id)
+        self.assertEqual(done.status, 'completed')
+        self.assertIsNotNone(done.finished_at)
+        self.assertEqual(changed, [(book.book_id, 'completed')])
+
+    def test_서재에서_책을_지워도_기록은_남아_보인다(self):
+        from readingsnail.pet.panels import LibraryPanel
+        book = self.journal.add_book('지울 책')
+        self.journal.add_entry('남아야 할 기록', book_id=book.book_id)
+        for i in range(310):                      # 최근 300건 밖으로 밀어낸다
+            self.journal.add_entry(f'다른 기록 {i}')
+        panel = LibraryPanel(self.pet.root, self.journal)
+        try:
+            panel._reselect(book.book_id)
+            panel._delete_book()
+            self.assertIsNone(self.journal.get_book(book.book_id))
+            loose_item = [i for i, ident in panel.books.items() if ident == ''][0]
+            panel.tree.selection_set(loose_item)
+            panel._show_entries()
+            self.assertIn('남아야 할 기록', panel.detail.get('1.0', 'end'))
+        finally:
+            panel.close()
+
+    def test_서재_목록이_잘리면_잘렸다고_말한다(self):
+        from readingsnail.pet import panels
+        from readingsnail.pet.panels import LibraryPanel
+        saved = panels.MAX_BOOK_CHOICES
+        panels.MAX_BOOK_CHOICES = 3
+        for i in range(5):
+            self.journal.add_book(f'책 {i}')
+        try:
+            panel = LibraryPanel(self.pet.root, self.journal)
+            try:
+                self.assertIn('5권 중 3권 표시', panel.summary.cget('text'))
+            finally:
+                panel.close()
+        finally:
+            panels.MAX_BOOK_CHOICES = saved
+
+    def test_책장은_잘못된_책등_색_한_줄에_안_죽는다(self):
+        from readingsnail.pet.panels import ShelfPanel
+        book = self.journal.add_book('색이 깨진 책', status='completed')
+        self.journal.update_book(book.book_id, spine_tint='이상한값')
+        panel = ShelfPanel(self.pet.root, self.journal)
+        try:
+            self.pet.root.update()
+            self.assertTrue(panel.canvas.find_withtag('spine'))
+        finally:
+            panel.close()
+
+    def test_책_등록의_저장소_오류는_대화상자로_보인다(self):
+        from readingsnail.pet.panels import AddBookPanel
+        from readingsnail.storage.db import StorageError
+
+        class Broken:
+            def add_book(self, *a, **k):
+                raise StorageError('디스크가 찼다')
+
+        panel = AddBookPanel(self.pet.root, Broken(), source=None)
+        try:
+            panel.title_entry.insert(0, '월든')
+            panel.add()                            # 예외가 새면 안 된다
+        finally:
+            panel.close()
+        self.assertTrue(any(kind == 'error' for kind, _ in self.shown))
+
+    # ── 완독 연출 ──
+    def test_완독하면_꿀꺽하고_책장으로_들어간_뒤_돌아온다(self):
+        from readingsnail.pet import art
+        self.pet.celebrate()
+        self.assertEqual(self.pet.motion.state, 'eat')
+        eat_ms = art.ANIMATIONS['eat'].frames * art.ANIMATIONS['eat'].frame_ms
+        shelve_ms = art.ANIMATIONS['shelve'].frames * art.ANIMATIONS['shelve'].frame_ms
+        self._pump(eat_ms / 1000 + 0.3)
+        self.assertEqual(self.pet.motion.state, 'shelve')
+        self._pump(shelve_ms / 1000 + 0.3)
+        self.assertEqual(self.pet.motion.state, 'idle')      # 갇히지 않는다

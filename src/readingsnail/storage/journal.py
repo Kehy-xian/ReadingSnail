@@ -40,6 +40,25 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).strftime(TIME_FORMAT)
 
 
+def to_local(stamp: str | None) -> datetime | None:
+    """저장된 UTC 시각을 사용자 시간대로. 저장은 UTC, **표시는 여기를 거친다.**
+
+    안 거치면 한국 시간 0시~9시에 쓴 기록이 전부 '어제' 날짜로 보인다.
+    밤늦게 읽고 쓰는 사람이 매번 하루 전 날짜를 본다.
+    """
+    try:
+        return datetime.strptime(str(stamp), TIME_FORMAT).replace(
+            tzinfo=timezone.utc).astimezone()
+    except (TypeError, ValueError):
+        return None
+
+
+def local_day(stamp: str | None) -> str:
+    """'YYYY-MM-DD' 를 사용자 시간대로. 못 읽는 값은 앞 10자 그대로."""
+    moment = to_local(stamp)
+    return moment.strftime('%Y-%m-%d') if moment else str(stamp or '')[:10]
+
+
 def new_id() -> str:
     return uuid.uuid4().hex
 
@@ -134,7 +153,7 @@ class Journal:
         status: str = 'reading', source: str = 'manual', added_at: str | None = None,
     ) -> Book:
         title = str(title or '').strip()
-        if not title:
+        if is_blank(title):
             raise ValueError('제목을 비울 수 없다')
         if status not in BOOK_STATUSES:
             raise ValueError(f'알 수 없는 상태: {status}')
@@ -142,6 +161,9 @@ class Journal:
         book_id = str(book_id or new_id())
         now = added_at or utc_now()
         started = now if status == 'reading' else None
+        # 등록하면서 바로 '다 읽음' 으로 넣는 책(전작 이전·이미 읽은 책)도
+        # finished_at 이 있어야 주간 요약과 책장이 센다.
+        finished = now if status == 'completed' else None
         with self.db.write() as con:
             con.execute(
                 f'INSERT INTO books({_BOOK_COLS}) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?) '
@@ -152,7 +174,7 @@ class Journal:
                 '  cover_path=COALESCE(excluded.cover_path, books.cover_path)',
                 (book_id, title, str(author or '').strip(), _clean(publisher), _clean(isbn13),
                  _clean(cover_path), int(spine_style), _clean(spine_tint), status,
-                 str(source or 'manual'), now, started, None),
+                 str(source or 'manual'), now, started, finished),
             )
         book = self.get_book(book_id)
         if book is None:
@@ -280,6 +302,21 @@ class Journal:
                 'ORDER BY created_at ASC, rowid ASC LIMIT ?',
                 (str(book_id), int(limit)),
             ).fetchall()
+            return [_entry(r) for r in rows]
+
+    def loose_entries(self, *, limit: int = 500) -> list[Entry]:
+        """책 없는 기록을 시간순으로. 책을 지워도 기록은 남는다 — 그 기록에 닿는 문이다.
+
+        entries_for_book(None) 은 str(None)='None' 을 찾아 늘 0건이었고, 서재는
+        최근 300건을 걸러 썼다. 기록이 300건 넘게 쌓이면 옛 책을 지우며 풀려난
+        기록은 어디서도 볼 수 없었다.
+        """
+        if limit <= 0:
+            return []
+        with self.db.connect() as con:
+            rows = con.execute(
+                f'SELECT {_ENTRY_COLS} FROM entries WHERE book_id IS NULL '
+                'ORDER BY created_at, rowid LIMIT ?', (int(limit),)).fetchall()
             return [_entry(r) for r in rows]
 
     def recent_entries(self, *, kind: str | None = None, limit: int = 50) -> list[Entry]:

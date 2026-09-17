@@ -32,6 +32,7 @@ class Draft:
     kind: str
     body: str
     updated_at: str
+    page: str | None = None
 
 
 class Drafts:
@@ -43,7 +44,7 @@ class Drafts:
         return f'book:{book_id}' if book_id else QUICK_KEY
 
     def save(self, draft_key: str, *, body: str = '', book_id: str | None = None,
-             kind: str = 'note') -> Draft | None:
+             kind: str = 'note', page: str | None = None) -> Draft | None:
         """빈 글을 저장하면 초안을 지운다. 남길 게 없기 때문이다."""
         if kind not in ENTRY_KINDS:
             raise ValueError(f'알 수 없는 기록 종류: {kind}')
@@ -53,34 +54,37 @@ class Drafts:
             return None
 
         clean_book = str(book_id or '').strip()[:MAX_BOOK_ID_CHARS] or None
+        clean_page = str(page or '').strip()[:40] or None
         with self.db.write() as con:
             con.execute(
-                'INSERT INTO drafts(draft_key, book_id, kind, body, updated_at) VALUES (?,?,?,?,?) '
+                'INSERT INTO drafts(draft_key, book_id, kind, body, updated_at, page) '
+                'VALUES (?,?,?,?,?,?) '
                 'ON CONFLICT(draft_key) DO UPDATE SET book_id=excluded.book_id, '
-                '  kind=excluded.kind, body=excluded.body, updated_at=excluded.updated_at',
-                (str(draft_key), clean_book, kind, text, utc_now()),
+                '  kind=excluded.kind, body=excluded.body, updated_at=excluded.updated_at, '
+                '  page=excluded.page',
+                (str(draft_key), clean_book, kind, text, utc_now(), clean_page),
             )
         return self.load(draft_key)
 
     def load(self, draft_key: str) -> Draft | None:
         with self.db.connect() as con:
             row = con.execute(
-                'SELECT draft_key, book_id, kind, body, updated_at FROM drafts WHERE draft_key=?',
-                (str(draft_key),),
+                'SELECT draft_key, book_id, kind, body, updated_at, page FROM drafts '
+                'WHERE draft_key=?', (str(draft_key),),
             ).fetchone()
             if row is None or not str(row['body']).strip():
                 return None
             return Draft(str(row['draft_key']), row['book_id'], str(row['kind']),
-                         str(row['body']), str(row['updated_at']))
+                         str(row['body']), str(row['updated_at']), row['page'])
 
     def list_all(self) -> list[Draft]:
         """복구 화면용. 최근에 손댄 순."""
         with self.db.connect() as con:
             rows = con.execute(
-                'SELECT draft_key, book_id, kind, body, updated_at FROM drafts '
+                'SELECT draft_key, book_id, kind, body, updated_at, page FROM drafts '
                 'ORDER BY updated_at DESC').fetchall()
             return [Draft(str(r['draft_key']), r['book_id'], str(r['kind']),
-                          str(r['body']), str(r['updated_at']))
+                          str(r['body']), str(r['updated_at']), r['page'])
                     for r in rows if str(r['body']).strip()]
 
     def clear(self, draft_key: str) -> None:

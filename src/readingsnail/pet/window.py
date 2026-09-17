@@ -386,6 +386,29 @@ class PetWindow:
             self.bubble.hide()
         self.draw()
 
+    # ── 완독 연출 ─────────────────────────────────────
+    def celebrate(self) -> None:
+        """완독 → 꿀꺽(eat) → 껍데기로(shelve) → 다시 idle. SPEC 5.
+
+        이 앱의 유일한 보상 순간이다. eat/shelve 는 INTERRUPT_STATES 라 계획기가
+        건드리지 않으므로, 프레임 길이만큼 지난 뒤 여기서 다음 상태로 넘긴다 —
+        안 넘기면 그 상태에 영원히 갇힌다.
+        """
+        if self._closed:
+            return
+        self._enter_state('eat')
+        eat_ms = art.ANIMATIONS['eat'].frames * art.ANIMATIONS['eat'].frame_ms
+        shelve_ms = art.ANIMATIONS['shelve'].frames * art.ANIMATIONS['shelve'].frame_ms
+        self._after(eat_ms, lambda: self._enter_state('shelve'))
+        self._after(eat_ms + shelve_ms, lambda: self._enter_state('idle', hold_ticks=12))
+
+    def _enter_state(self, state: str, *, hold_ticks: int = 0) -> None:
+        if self._closed:
+            return
+        self.motion = replace(self.motion, state=state, target_x=None, target_y=None,
+                              hold_ticks=hold_ticks, fall_speed=0)
+        self.draw()
+
     def call_later(self, delay_ms: int, fn: Callable[[], None]) -> None:
         """UI 스레드에서 나중에 부른다. 배경 스레드가 화면을 만지면 안 되므로
         모든 발화는 이 문을 지난다."""

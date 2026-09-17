@@ -297,8 +297,9 @@ class AuditSpriteFixes(unittest.TestCase):
         hat.save(art.prop_path(overrides, 'hat'))
 
         resource_root = self.root / 'res'
-        (resource_root / 'resources').mkdir(parents=True)
-        (resource_root / 'resources' / 'props').symlink_to(self.props)
+        # 복사한다. Windows 에서 symlink 는 관리자 권한이 필요하다.
+        import shutil
+        shutil.copytree(self.props, resource_root / 'resources' / 'props')
         cache = SpriteCache(None, resource_root, data_dir=self.root / 'data')
         self.assertEqual(cache.prop_roots()[0], overrides)
         self.assertIn('hat', cache.available_props())

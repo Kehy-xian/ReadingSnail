@@ -245,8 +245,11 @@ class Backup(unittest.TestCase):
     # `f'file:{path}?mode=ro'` 로 URI 를 만들면 '?'·'#' 에서 잘린다. SQLite 는
     # 오류를 내지 않고 **엉뚱한 빈 DB** 를 열어 백업이 멀쩡한 얼굴로 비게 된다.
 
-    ODD_NAMES = ('백업 #2.sqlite3', '질문?.sqlite3', '퍼센트%20.sqlite3',
-                 "따옴표'.sqlite3")
+    # '?' 는 Windows 파일 이름에 쓸 수 없다. 그 글자로 URI 가 잘리는 것이 결함의
+    # 핵심이지만, 시험 파일 자체를 못 만드는 플랫폼에서는 나머지로 확인한다.
+    ODD_NAMES = tuple(n for n in ('백업 #2.sqlite3', '질문?.sqlite3',
+                                  '퍼센트%20.sqlite3', "따옴표'.sqlite3")
+                      if '?' not in n or not sys.platform.startswith('win'))
 
     def test_이름이_이상한_백업에서도_내용을_읽어_온다(self):
         # 바탕화면에서 고른 파일이 이런 이름일 수 있다. 읽는 쪽이 잘리면

@@ -439,6 +439,28 @@ class BuildSpec(unittest.TestCase):
                 self.assertTrue(rel in self.spec or f"'src/readingsnail/{folder}'" in self.spec,
                                 f'{rel} 이 spec datas 에 없다')
 
+    def test_받는_주소가_prerelease_를_건너뛰지_않는다(self):
+        """GitHub 의 `/releases/latest/` 는 **시험판을 건너뛴다.** 시험판만
+        올려 둔 지금은 404 다. 받는 사람에게 죽은 링크를 주게 된다 — 실제로 그랬다.
+        태그 주소를 직접 쓴다."""
+        docs = [ROOT / 'README.md', ROOT / 'docs' / 'readme_for_testers_ko.txt']
+        for path in docs:
+            text = path.read_text(encoding='utf-8')
+            with self.subTest(file=path.name):
+                self.assertNotIn('/releases/latest', text,
+                                 'prerelease 에서는 404 다. 태그 주소를 쓸 것')
+                self.assertIn('/releases/download/', text, '받는 주소가 없다')
+
+    def test_받는_주소가_워크플로가_올리는_파일과_맞는다(self):
+        # 문서의 링크와 실제로 올리는 태그·파일 이름이 어긋나면 링크가 죽는다.
+        import re
+        flow = (ROOT / '.github' / 'workflows' / 'windows-build.yml').read_text(encoding='utf-8')
+        tag = re.search(r"\$tag = '([^']+)'", flow).group(1)
+        asset = re.search(r'(\S+\.zip) -Force', flow).group(1)
+        wanted = f'/releases/download/{tag}/{asset}'
+        readme = (ROOT / 'README.md').read_text(encoding='utf-8')
+        self.assertIn(wanted, readme, f'README 의 링크가 {wanted} 와 다르다')
+
     def test_콘솔_창을_띄우지_않는다(self):
         self.assertIn('console=False', self.spec)
 

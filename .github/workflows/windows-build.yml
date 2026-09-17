@@ -6,8 +6,9 @@
 #     컴퓨터에서 exe 를 만들고, 받는 쪽은 zip 을 풀어 더블클릭만 하면 된다.
 #
 # 받는 법
-#     https://github.com/Kehy-xian/ReadingSnail/releases/latest
-#     링크 하나로 끝난다. Actions 의 Artifacts 는 **로그인해야 하고, 실행 중에는
+#     https://github.com/Kehy-xian/ReadingSnail/releases/download/test-build/ReadingSnail-windows.zip
+#     링크 하나로 끝난다. **`/releases/latest/` 는 쓰지 않는다** — GitHub 의
+#     'latest' 는 시험판(prerelease)을 건너뛰어 404 다. 태그 주소를 직접 쓴다. Actions 의 Artifacts 는 **로그인해야 하고, 실행 중에는
 #     회색으로 잠기고, 휴대폰에서는 아예 안 받아진다.** 받는 사람이 그걸 겪게
 #     두지 않는다 — 그래서 빌드가 끝나면 Releases 에 같은 zip 을 올린다.
 #
@@ -138,4 +139,5 @@ jobs:
             gh release edit $tag --notes $notes
           }
           gh release upload $tag ReadingSnail-windows.zip --clobber
-          Write-Host "받는 곳: https://github.com/$env:GITHUB_REPOSITORY/releases/latest"
+          # /releases/latest/ 는 prerelease 를 건너뛰어 404 다. 태그 주소를 쓴다.
+          Write-Host "받는 곳: https://github.com/$env:GITHUB_REPOSITORY/releases/download/$tag/ReadingSnail-windows.zip"

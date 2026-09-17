@@ -2,8 +2,10 @@
 
 ■ 새 버전 받기
 
-  https://github.com/Kehy-xian/ReadingSnail/releases/latest
-  압축을 풀어 이 폴더를 통째로 바꾸면 됩니다. 기록은 다른 곳에 있어 남습니다.
+  https://github.com/Kehy-xian/ReadingSnail/releases/download/test-build/ReadingSnail-windows.zip
+
+  같은 주소가 늘 최신입니다. 압축을 풀어 이 폴더를 통째로 바꾸면 됩니다.
+  기록은 다른 곳에 있어 남습니다.
 
 ■ 실행
 

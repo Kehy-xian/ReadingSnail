@@ -269,8 +269,72 @@ class Install(unittest.TestCase):
         self.assertFalse((self.root / 'blocked').exists())
 
 
-if __name__ == '__main__':
-    unittest.main(verbosity=2)
+
+@unittest.skipUnless(HAS_PIL, 'Pillow 없음')
+class AuditSpriteFixes(unittest.TestCase):
+    """전체 감사에서 나온 스프라이트 결함들."""
+
+    def setUp(self) -> None:
+        import render_placeholder_pack as renderer
+        self._tmp = TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        self.pack = self.root / 'sprites'
+        self.props = self.root / 'props'
+        renderer.main([str(self.pack), '--props', str(self.props),
+                       '--states', 'idle', '--quiet'])
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_교체본에만_있는_소품이_달팽이에_그려진다(self):
+        # 소품 창 목록에는 뜨는데 달팽이에는 절대 안 그려지던 것 — 그리기가 번들만 봤다.
+        from PIL import Image, ImageDraw
+        from readingsnail.pet.sprites import SpriteCache, compose_frame
+        overrides = self.root / 'data' / 'art_overrides'
+        overrides.mkdir(parents=True)
+        hat = Image.new('RGBA', (art.CANVAS, art.CANVAS), (0, 0, 0, 0))
+        ImageDraw.Draw(hat).rectangle([60, 10, 130, 50], fill=(200, 30, 30, 255))
+        hat.save(art.prop_path(overrides, 'hat'))
+
+        resource_root = self.root / 'res'
+        (resource_root / 'resources').mkdir(parents=True)
+        (resource_root / 'resources' / 'props').symlink_to(self.props)
+        cache = SpriteCache(None, resource_root, data_dir=self.root / 'data')
+        self.assertEqual(cache.prop_roots()[0], overrides)
+        self.assertIn('hat', cache.available_props())
+
+        plain = compose_frame(self.pack, 'idle', 0)
+        with_hat = compose_frame(self.pack, 'idle', 0, props=('hat',),
+                                 prop_roots=cache.prop_roots())
+        self.assertNotEqual(plain.tobytes(), with_hat.tobytes())
+
+    def test_규칙_밖_소품_이름은_목록에서_빠진다(self):
+        # prop_모자.png 하나가 검증기·설치기를 ValueError 로 죽이고 소품 창을 오염시켰다.
+        from readingsnail.pet.validation import validate_pack
+        for bad in ('prop_모자.png', 'prop_Leaf.png', 'prop_a,b.png'):
+            (self.props / bad).write_bytes(b'')
+        names = art.list_props(self.props)
+        self.assertEqual(set(names), {'leaf', 'glasses'})
+        validate_pack(self.props, states=())                # 예외가 나면 안 된다
+
+    def test_통짜_팩_위에_분리_팩을_설치하면_새_그림이_쓰인다(self):
+        # 옛 통짜 프레임이 남아 새 분리 팩을 가렸다(로더는 통짜를 먼저 본다).
+        import install_sprite_pack as installer
+        from readingsnail.pet.sprites import compose_frame
+        target = self.root / 'overrides'
+        target.mkdir()
+        for i in range(art.ANIMATIONS['idle'].frames):
+            compose_frame(self.pack, 'idle', i).save(target / art.frame_name('idle', i))
+        self.assertTrue(art.has_full_animation(target, 'idle'))
+        installer.install(self.pack, target, ('idle',))
+        self.assertFalse(art.has_full_animation(target, 'idle'))
+        self.assertTrue(art.has_layered_animation(target, 'idle'))
+
+    def test_설치_보고는_실제로_옮긴_상태만_말한다(self):
+        import install_sprite_pack as installer
+        target = self.root / 'overrides2'
+        moved = installer.install(self.pack, target, ('idle', 'walk', 'eat'))
+        self.assertEqual(installer.installed_states(moved, ('idle', 'walk', 'eat')), ('idle',))
 
 
 @unittest.skipUnless(HAS_PIL, 'Pillow 없음')
@@ -337,3 +401,7 @@ class MalformedArt(unittest.TestCase):
         (self.pack / art.frame_name('idle', 1, body_only=True)).write_bytes(b'')
         codes = {i.code for i in validate_pack(self.pack, states=('idle',))}
         self.assertIn('UNREADABLE', codes)
+
+
+if __name__ == '__main__':
+    unittest.main(verbosity=2)

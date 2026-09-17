@@ -55,7 +55,8 @@ def pillow_available() -> bool:
 # ── 합성 ──────────────────────────────────────────────
 def compose_frame(root: str | Path, state: str, index: int, *,
                   slug: str = art.SLUG, props: tuple[str, ...] = (),
-                  prop_root: str | Path | None = None):
+                  prop_root: str | Path | None = None,
+                  prop_roots: tuple[str | Path, ...] = ()):
     """한 프레임을 만들어 PIL 이미지로 돌려준다.
 
     쌓는 순서: 몸통 → 껍데기 → 소품. 껍데기가 고정 레이어면 프레임마다 다시
@@ -89,15 +90,23 @@ def compose_frame(root: str | Path, state: str, index: int, *,
         raise FileNotFoundError(f'{state} 프레임이 온전하지 않다: {folder}')
 
     if props:
-        source = Path(prop_root) if prop_root is not None else folder
+        # 소품 출처는 여러 곳일 수 있다 — 교체본(art_overrides) 먼저, 그다음 번들.
+        # 번들만 보면 사용자가 넣은 소품이 소품 창에는 뜨는데 달팽이에는 안 그려진다.
+        sources = tuple(Path(r) for r in prop_roots) or (
+            (Path(prop_root),) if prop_root is not None else (folder,))
         for name in props:
-            try:
-                path = art.prop_path(source, name)
-            except ValueError:
-                # 소품 이름은 설정에서 온다. 규칙에 안 맞는다고 그리기가 터지면
-                # 설정 한 줄이 달팽이를 안 보이게 만든다.
-                continue
-            if not path.is_file():
+            path = None
+            for source in sources:
+                try:
+                    candidate = art.prop_path(source, name)
+                except ValueError:
+                    # 소품 이름은 설정에서 온다. 규칙에 안 맞는다고 그리기가 터지면
+                    # 설정 한 줄이 달팽이를 안 보이게 만든다.
+                    break
+                if candidate.is_file():
+                    path = candidate
+                    break
+            if path is None:
                 continue        # 없는 소품은 그리지 않는다. 그것뿐이다.
             try:
                 with _open(path) as overlay:
@@ -165,6 +174,14 @@ class SpriteCache:
         self.props = tuple(props)
         self._cache.clear()
 
+    def prop_roots(self) -> tuple[Path, ...]:
+        """소품을 찾는 순서. available_props() 와 같은 순서여야 목록과 그림이 맞는다."""
+        roots: list[Path] = []
+        if self.overrides is not None and self.overrides.is_dir():
+            roots.append(self.overrides)
+        roots.append(self.prop_root)
+        return tuple(roots)
+
     def available_props(self) -> tuple[str, ...]:
         found: list[str] = []
         for root in ((self.overrides,) if self.overrides else ()) + (self.prop_root,):
@@ -183,7 +200,7 @@ class SpriteCache:
         images = []
         for index in range(count):
             frame = compose_frame(root, state, index, slug=self.slug,
-                                  props=self.props, prop_root=self.prop_root)
+                                  props=self.props, prop_roots=self.prop_roots())
             images.append(ImageTk.PhotoImage(
                 _prepare(frame, facing=facing, size=size), master=self.master))
         return tuple(images)

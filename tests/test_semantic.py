@@ -377,9 +377,6 @@ class ColdStartWeights(unittest.TestCase):
         self.assertEqual(dialogue.ECHO_DELAY_SEC, (90, 300))
 
 
-if __name__ == '__main__':
-    unittest.main(verbosity=2)
-
 
 class QuoteRepetition(Base):
     """명언도 반복을 막아야 한다. ref_id 가 아니라 entry_id 로 이력을 남기면
@@ -471,3 +468,7 @@ class WorkerTermination(Base):
         self.assertEqual(worker.encoded, 4)
         self.assertEqual(worker.pending, 1)
         self.assertLess(rounds, 20)
+
+
+if __name__ == '__main__':
+    unittest.main(verbosity=2)

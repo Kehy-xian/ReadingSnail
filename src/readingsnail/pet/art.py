@@ -127,6 +127,13 @@ def list_props(root: str | Path) -> tuple[str, ...]:
     names = []
     for path in sorted(folder.glob(f'{PROP_PREFIX}*.png')):
         stem = path.stem[len(PROP_PREFIX):]
-        if stem:
-            names.append(stem)
+        try:
+            canonical = check_slug(stem)
+        except ValueError:
+            # prop_모자.png, prop_a,b.png 같은 이름. 목록에 넣으면 prop_path() 가
+            # 나중에 ValueError 로 검증기·설치기를 죽이고 소품 창을 오염시킨다.
+            continue
+        if canonical != stem:
+            continue        # prop_Leaf.png — 규칙은 소문자다. prop_leaf.png 와 겹친다
+        names.append(stem)
     return tuple(names)

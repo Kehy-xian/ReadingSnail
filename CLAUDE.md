@@ -51,7 +51,7 @@ Markdown·CSV 로 들고 나가고, 백업으로 되돌릴 수 있다. 남은 �
 **원화는 아직 없다.** 자리표시 팩으로 파이프라인만 검증했다
 (`python tools/render_placeholder_pack.py` — 저장소에 커밋하지 않는다).
 
-동작이 검증된 것 — `python -m unittest discover -s tests` (377건 통과)
+동작이 검증된 것 — `python -m unittest discover -s tests` (약 440건 통과)
 GUI 테스트는 tkinter·디스플레이가 없으면 자동으로 건너뛴다.
 
 | 있는 것 | 파일 |
@@ -64,7 +64,7 @@ GUI 테스트는 tkinter·디스플레이가 없으면 자동으로 건너뛴다
 | 한글 검색 라우터 | `storage/search.py` |
 | 명언 시드 24건 + 멱등 주입기 | `storage/seeds/quotes_ko.json`, `storage/seed.py` |
 | 데이터 폴더 경로 (전작 포함) | `paths.py` |
-| 4갈래 발화 가중치 | `services/dialogue.py` |
+| 5갈래 발화 가중치 | `services/dialogue.py` |
 | 발화 엔진 (저장소 연결·반복 방지) | `services/speaker.py` |
 | 의미 검색 되살리기 | `services/recall.py` |
 | 배경 임베딩 작업자 | `services/embedding.py` |
@@ -83,7 +83,7 @@ GUI 테스트는 tkinter·디스플레이가 없으면 자동으로 건너뛴다
 | ttk 스타일 (팔레트 적용) | `pet/styling.py` |
 | 책장 배치 (순수 계산) | `pet/shelf.py` |
 | 표지 색 추출 → 책등 tint | `services/covers.py` |
-| 실행 진입점 | `__main__.py` |
+| 실행 진입점 | `__main__.py` (설치본은 `launcher.py`) |
 | 폰트·색 (대비 검증됨) | `theme.py` |
 | 내보내기 (Markdown·CSV) | `services/export.py` |
 | 백업·복원·버전 전환 백업 | `services/backup.py` |
@@ -94,8 +94,12 @@ GUI 테스트는 tkinter·디스플레이가 없으면 자동으로 건너뛴다
 | 주간 요약·설정 창 | `pet/panels.py` |
 | 빌드·설치본 | `ReadingSnail.spec`, `installer/ReadingSnail.iss`, `docs/BUILD_KO.md` |
 
-비어 있는 것 — **원화**. **번들 모델(multilingual-e5-small ONNX)도 아직 없다** —
-없어도 앱은 돌고 기록도 쌓인다. 되살리기만 조용히 쉰다. `docs/PORTING_MAP.md`대로 전작에서 가져와 채운다.
+비어 있는 것 — **원화**(그림 자체. 파이프라인은 자리표시 팩으로 끝까지 검증됐다).
+**번들 모델(multilingual-e5-small ONNX)도 아직 없다** — 없어도 앱은 돌고 기록도
+쌓인다. 되살리기만 조용히 쉰다. 자동 업데이트는 서버·서명 정책이 정해진 뒤에 한다.
+
+**전체 감사(2026-09) 뒤 남은 것** — `docs/AUDIT_2026-09.md` 에 확정·미확정 목록이 있다.
+고친 것은 커밋 로그에, 안 고친 것은 그 문서에 '왜' 와 함께 적혀 있다.
 
 패널은 6-b 에서 ttk 로 다시 짰다. 색·폰트는 `pet/styling.py` 를 거치며,
 값을 패널에 박아넣지 않는다.
@@ -310,6 +314,17 @@ ttk 전체가 오염된다(테스트 23건이 이걸로 깨졌다). `_try_bootst
 말하는 예외(`StorageError`)를 던진다.
 
 ## 함정 두 가지
+
+7. **시각은 UTC 로 저장하고, 표시는 `journal.local_day()` 를 거친다.** `created_at[:10]`
+   을 그대로 보여주면 한국 시간 0~9시에 쓴 기록이 '어제' 가 된다. 밤늦게 읽고
+   쓰는 사람이 매번 하루 전 날짜를 본다 — 서재·내보내기·주간 요약 세 곳에서 실제로 그랬다.
+8. **스키마 파일의 `CREATE ... IF NOT EXISTS` 는 기존 DB 에 새 컬럼을 보태지 않는다.**
+   나중에 보탠 컬럼은 `db._EXTRA_COLUMNS` 에 적는다. 트리거·인덱스를 고칠 때도 같은
+   자리에서 DROP/CREATE 로 배달해야 한다.
+9. **설치본의 진입점은 `launcher.py` 다.** 패키지의 `__main__.py` 를 PyInstaller 에
+   주면 상대 import 가 ImportError 로 죽는다. `python -m` 으로는 안 보이는 결함이다.
+   `Path(__file__)` 로 읽는 파일(schema.sql, seeds)은 spec 의 datas 에 있어야 한다 —
+   `tests/test_operations.py::BuildSpec` 이 지킨다.
 
 6. **빈 기록 판정은 `journal.is_blank()` 로 한다.** `str.strip()` 은 폭 0
    공백(U+200B)이나 BOM 을 지우지 않는다. 붙여넣기로 섞여 들어오면 눈에

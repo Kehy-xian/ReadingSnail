@@ -208,9 +208,6 @@ class NoInheritanceChain(unittest.TestCase):
         self.assertEqual(PetWindow.__bases__, (object,))
 
 
-if __name__ == '__main__':
-    unittest.main(verbosity=2)
-
 
 @unittest.skipUnless(GUI, REASON)
 class AppBoot(unittest.TestCase):
@@ -1662,3 +1659,7 @@ class AuditPanelFixes(unittest.TestCase):
         self.assertEqual(self.pet.motion.state, 'shelve')
         self._pump(shelve_ms / 1000 + 0.3)
         self.assertEqual(self.pet.motion.state, 'idle')      # 갇히지 않는다
+
+
+if __name__ == '__main__':
+    unittest.main(verbosity=2)

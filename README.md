@@ -17,13 +17,14 @@ Windows 데스크톱 위젯. 모든 기록은 내 PC에만 저장됩니다.
 
 ## 테스트앱 받기
 
-Python 을 설치하지 않고 바로 써 보려면:
+Python 을 설치하지 않고 바로 써 보려면 — **[내려받기](https://github.com/Kehy-xian/ReadingSnail/releases/latest/download/ReadingSnail-windows.zip)**
 
-1. 이 저장소의 **Actions** 탭 → **테스트앱 (Windows)** → 가장 최근 실행
-2. 아래 **Artifacts** 의 `책읽는달팽이-테스트앱-…` zip 을 내려받기
-3. 압축을 풀고 `ReadingSnail.exe` 더블클릭 (설치 과정 없음)
+압축을 풀고 `ReadingSnail.exe` 를 더블클릭하면 됩니다. 설치 과정이 없습니다.
+처음 켤 때 Windows 가 "PC 보호" 창을 띄우면 **추가 정보 → 실행**.
 
-새로 만들고 싶으면 그 화면의 **Run workflow** 단추를 누르면 됩니다.
+목록에서 고르려면 [Releases](https://github.com/Kehy-xian/ReadingSnail/releases/latest),
+직전 커밋의 것이 필요하면 [Actions](https://github.com/Kehy-xian/ReadingSnail/actions)
+탭의 **Run workflow** 로 새로 만들 수 있습니다(Artifacts 는 로그인해야 받아집니다).
 기록은 앱 폴더가 아니라 `%LOCALAPPDATA%\ReadingSnail` 에 쌓이므로,
 앱 폴더를 지우거나 새 zip 으로 바꿔도 기록은 그대로 남습니다.
 

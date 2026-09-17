@@ -6,8 +6,10 @@
 #     컴퓨터에서 exe 를 만들고, 받는 쪽은 zip 을 풀어 더블클릭만 하면 된다.
 #
 # 받는 법
-#     저장소 → Actions 탭 → 이 워크플로 → 최근 실행 → 아래 Artifacts 의 zip.
-#     'Run workflow' 단추로 아무 때나 다시 만들 수 있다.
+#     https://github.com/Kehy-xian/ReadingSnail/releases/latest
+#     링크 하나로 끝난다. Actions 의 Artifacts 는 **로그인해야 하고, 실행 중에는
+#     회색으로 잠기고, 휴대폰에서는 아예 안 받아진다.** 받는 사람이 그걸 겪게
+#     두지 않는다 — 그래서 빌드가 끝나면 Releases 에 같은 zip 을 올린다.
 #
 # **여기가 이 코드가 Windows 에서 도는 유일한 자리다.** 개발은 Linux 에서 했고,
 # -transparentcolor·DPI 인식·폰트 등록·뮤텍스는 Windows 전용이라 여기서만 확인된다.
@@ -23,7 +25,7 @@ on:
     paths-ignore: ['docs/**', '**.md']
 
 permissions:
-  contents: read
+  contents: read              # 잡별로 필요한 만큼만 연다(빌드 잡은 write)
 
 jobs:
   test:
@@ -42,6 +44,8 @@ jobs:
   build:
     name: 무설치 zip 만들기
     runs-on: windows-latest
+    permissions:
+      contents: write         # Releases 에 올리려면 필요하다
     steps:
       - uses: actions/checkout@v4
 
@@ -89,7 +93,11 @@ jobs:
         # 빌드가 통째로 실패한다. 받는 사람이 보는 이름만 한글이면 된다.
         run: Copy-Item docs\readme_for_testers_ko.txt 'dist\ReadingSnail\읽어보세요.txt'
 
-      - name: zip 으로 올리기
+      - name: 압축
+        shell: pwsh
+        run: Compress-Archive -Path dist\ReadingSnail\* -DestinationPath ReadingSnail-windows.zip -Force
+
+      - name: Artifacts 에 올리기
         # 켜지는지 확인이 실패해도 올린다 — 무엇이 잘못됐는지 보려면 받아봐야 한다.
         if: always()
         uses: actions/upload-artifact@v4
@@ -98,3 +106,36 @@ jobs:
           path: dist/ReadingSnail
           retention-days: 30
           if-no-files-found: error
+
+      - name: Releases 에 올리기
+        # **여기가 실제로 받는 곳이다.** Artifacts 와 달리 로그인도, 데스크톱도
+        # 필요 없고 주소가 늘 같다. 늘 같은 태그를 갱신한다 — 시험판이라
+        # 버전을 세지 않는다. prerelease 로 표시해 정식 배포와 구분한다.
+        if: success()
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = 'test-build'
+          $notes = @"
+          자리표시 그림으로 도는 **시험판**입니다. 정식 배포가 아닙니다.
+
+          받는 법: 아래 ``ReadingSnail-windows.zip`` 을 내려받아 압축을 풀고
+          ``ReadingSnail.exe`` 를 더블클릭하세요. 설치 과정이 없습니다.
+          처음 켤 때 Windows 가 "PC 보호" 창을 띄우면 '추가 정보' → '실행'.
+
+          기록은 ``%LOCALAPPDATA%\ReadingSnail`` 에 따로 쌓입니다.
+          앱 폴더를 지우거나 새 zip 으로 바꿔도 기록은 남습니다.
+
+          자세한 것은 zip 안의 ``읽어보세요.txt``.
+
+          커밋: $env:GITHUB_SHA
+          "@
+          gh release view $tag 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag --prerelease --title '책 읽는 달팽이 — 테스트앱' --notes $notes
+          } else {
+            gh release edit $tag --notes $notes
+          }
+          gh release upload $tag ReadingSnail-windows.zip --clobber
+          Write-Host "받는 곳: https://github.com/$env:GITHUB_REPOSITORY/releases/latest"

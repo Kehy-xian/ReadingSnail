@@ -1,5 +1,10 @@
 책 읽는 달팽이 — 테스트앱
 
+■ 새 버전 받기
+
+  https://github.com/Kehy-xian/ReadingSnail/releases/latest
+  압축을 풀어 이 폴더를 통째로 바꾸면 됩니다. 기록은 다른 곳에 있어 남습니다.
+
 ■ 실행
 
   이 폴더의 ReadingSnail.exe 를 더블클릭하세요.

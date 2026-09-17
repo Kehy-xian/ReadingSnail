@@ -22,6 +22,7 @@ from __future__ import annotations
 import sys
 import time
 import tkinter as tk
+import traceback
 from dataclasses import replace
 from pathlib import Path
 from typing import Callable
@@ -35,6 +36,10 @@ BASE_SIZE = art.CANVAS   # 원화 캔버스 크기. 스프라이트 규격과 �
 ROAM_INTERVAL_MS = 70    # 이동 틱
 DRAW_INTERVAL_MS = 120   # 그리기 틱
 BUBBLE_HOLD_MS = 9000    # 말풍선이 떠 있는 시간
+BUBBLE_MAX_CHARS = 120   # 이보다 길면 '…'. 전문은 기록 창에서 본다.
+BUBBLE_WRAP_PX = 240     # 말풍선 글줄 폭
+DRAG_THRESHOLD_PX = 4    # 이만큼 움직여야 '끌기'다. 그 전엔 클릭이다.
+ERROR_LOG_MAX_BYTES = 512 * 1024
 
 
 def enable_dpi_awareness() -> None:
@@ -77,6 +82,93 @@ def desktop_work_area(root: tk.Misc) -> WorkArea:
     return WorkArea(0, 0, root.winfo_screenwidth(), root.winfo_screenheight())
 
 
+class SpeechBubble:
+    """말풍선. 달팽이 창 **밖**의 작은 창이다.
+
+    창 안 캔버스에 그리면 창 크기(190px, 배율 0.5 면 95px)에 갇혀 두 줄만 넘어도
+    위로 잘려 첫 줄이 안 보였다. 기록을 다시 꺼내 보여주는 것이 이 앱의 전부인데
+    보여주는 글이 잘리면 안 된다. 그래서 글 크기에 맞춰 늘어나는 창을 달팽이
+    머리 위에 띄운다. 위가 모자라면 아래로 내려온다.
+    """
+
+    def __init__(self, root: tk.Tk, *, on_click: Callable[[], None] | None = None):
+        self.root = root
+        self.on_click = on_click
+        self.top: tk.Toplevel | None = None
+        self.label: tk.Label | None = None
+        self.text: str | None = None
+
+    def _ensure(self) -> None:
+        if self.top is not None:
+            return
+        top = tk.Toplevel(self.root)
+        top.withdraw()
+        top.overrideredirect(True)
+        try:
+            top.wm_attributes('-topmost', True)
+        except tk.TclError:
+            pass
+        top.configure(bg=PALETTE['border'])          # 1px 테두리 노릇
+        self.label = tk.Label(top, text='', wraplength=BUBBLE_WRAP_PX, justify='left',
+                              bg=PALETTE['paper'], fg=PALETTE['ink'],
+                              font=font('bubble', master=self.root), padx=10, pady=7)
+        self.label.pack(padx=1, pady=1)
+        for widget in (top, self.label):
+            widget.bind('<Button-1>', lambda _e: self._clicked())
+        self.top = top
+
+    def _clicked(self) -> None:
+        if self.on_click is not None:
+            self.on_click()
+
+    def show(self, text: str, *, x: int, y: int, width: int, area: WorkArea) -> None:
+        self._ensure()
+        assert self.top is not None and self.label is not None
+        self.text = text
+        self.label.config(text=text)
+        self.place(x=x, y=y, width=width, area=area)
+        try:
+            self.top.deiconify()
+            self.top.lift()
+        except tk.TclError:
+            pass
+
+    def place(self, *, x: int, y: int, width: int, area: WorkArea) -> None:
+        """달팽이 창 위 가운데. 위가 모자라면 아래. 좌우는 작업 영역 안으로."""
+        if self.top is None or self.text is None:
+            return
+        try:
+            self.top.update_idletasks()
+            w = self.top.winfo_reqwidth()
+            h = self.top.winfo_reqheight()
+            bx = x + width // 2 - w // 2
+            by = y - h - 4
+            if by < area.top:
+                by = y + width + 4
+            bx = max(area.left, min(bx, area.right - w))
+            self.top.geometry(f'+{bx}+{by}')
+        except tk.TclError:
+            pass
+
+    def hide(self) -> None:
+        self.text = None
+        if self.top is not None:
+            try:
+                self.top.withdraw()
+            except tk.TclError:
+                pass
+
+    def destroy(self) -> None:
+        top, self.top = self.top, None
+        self.label = None
+        self.text = None
+        if top is not None:
+            try:
+                top.destroy()
+            except tk.TclError:
+                pass
+
+
 class PetWindow:
     """달팽이 한 마리. 상속하지 말 것 — 늘어나면 패널을 따로 뗀다."""
 
@@ -112,8 +204,12 @@ class PetWindow:
         # 스프라이트가 없으면 벡터로 그린다. 원화가 한 상태씩 들어와도
         # 그 상태만 교체되고 나머지는 그대로 벡터다(SPRITE_GUIDE_KO.md).
         self.on_quit = on_quit
+        self.data_dir = Path(data_dir) if data_dir is not None else None
 
         self.root = root if root is not None else tk.Tk()
+        # Tk 콜백 안의 예외는 기본적으로 stderr 로만 간다. 설치본은 콘솔이 없어
+        # 흔적조차 없고, 반쯤 만들어진 창이 화면에 남는다. 파일로도 남긴다.
+        self.root.report_callback_exception = self._report_callback_exception
         self.root.title('책 읽는 달팽이')
         self.root.geometry(f'{self.size}x{self.size}+{start_at[0]}+{start_at[1]}')
         self.root.overrideredirect(True)
@@ -144,8 +240,10 @@ class PetWindow:
         self.motion = PetMotion(x=start_at[0], y=start_at[1], state='idle', hold_ticks=14)
 
         self._dragging = False
+        self._press: tuple[int, int] | None = None
         self._grab_dx = 0
         self._grab_dy = 0
+        self.bubble = SpeechBubble(self.root, on_click=lambda: self.say(None))
         self._paused = False        # 메뉴·패널이 열려 있으면 멈춘다
         self._closed = False
         self._bubble: str | None = None
@@ -210,25 +308,36 @@ class PetWindow:
 
     def _place(self) -> None:
         self.root.geometry(f'{self.size}x{self.size}+{self.motion.x}+{self.motion.y}')
+        if self._bubble:
+            self.bubble.place(x=self.motion.x, y=self.motion.y, width=self.size,
+                              area=self.work_area())
 
     # ── 입력 ──────────────────────────────────────────
     def _drag_start(self, event: tk.Event) -> None:
-        self._dragging = True
+        # 누른 것만으로는 '집어 든' 것이 아니다. 더블클릭으로 기록 창을 열 때마다
+        # 달팽이가 바닥까지 떨어지면 안 된다. 움직여야 끌기다.
+        self._press = (event.x_root, event.y_root)
         self._grab_dx = event.x_root - self.root.winfo_x()
         self._grab_dy = event.y_root - self.root.winfo_y()
-        self.motion = self.planner.grab(self.motion)
 
     def _drag_move(self, event: tk.Event) -> None:
         if not self._dragging:
-            return
+            if self._press is None:
+                return
+            if (abs(event.x_root - self._press[0]) < DRAG_THRESHOLD_PX
+                    and abs(event.y_root - self._press[1]) < DRAG_THRESHOLD_PX):
+                return
+            self._dragging = True
+            self.motion = self.planner.grab(self.motion)
         x, y = self.planner.clamp(event.x_root - self._grab_dx,
                                   event.y_root - self._grab_dy, self.work_area())
         self.motion = PetMotion(x=x, y=y, state='idle', facing=self.motion.facing)
         self._place()
 
     def _drag_end(self, _event: tk.Event) -> None:
+        self._press = None
         if not self._dragging:
-            return
+            return              # 클릭이었다. 서 있던 대로 둔다.
         self._dragging = False
         self.motion = self.planner.release(self.motion, self.work_area())
 
@@ -237,7 +346,10 @@ class PetWindow:
         try:
             self.menu.tk_popup(event.x_root, event.y_root)
         finally:
-            self.menu.grab_release()
+            try:
+                self.menu.grab_release()
+            except tk.TclError:
+                pass            # 메뉴에서 '종료' 를 고르면 이미 부서진 뒤다
             self._paused = False
 
     def _call(self, handler: Callable[[], None] | None) -> None:
@@ -252,6 +364,9 @@ class PetWindow:
         """
         if self._closed:
             return
+        text = str(text or '').strip()
+        if len(text) > BUBBLE_MAX_CHARS:
+            text = text[:BUBBLE_MAX_CHARS - 1] + '…'
         self._bubble = text or None
         if self._bubble_after is not None:
             self._cancel(self._bubble_after)
@@ -260,8 +375,15 @@ class PetWindow:
             self._bubble_after = self._after(hold_ms, lambda: self.say(None))
         if self._bubble and self.motion.state in ('idle', 'walk'):
             # 말할 때는 멈춰 선다. 걸어가면서 말풍선이 따라다니면 읽기 어렵다.
+            # 틱은 ROAM_INTERVAL_MS 다 — 말풍선이 떠 있는 동안 서 있어야 한다.
             self.motion = replace(self.motion, state='talk', target_x=None,
-                                  target_y=None, hold_ticks=max(8, hold_ms // 400))
+                                  target_y=None,
+                                  hold_ticks=max(8, hold_ms // ROAM_INTERVAL_MS))
+        if self._bubble:
+            self.bubble.show(self._bubble, x=self.motion.x, y=self.motion.y,
+                             width=self.size, area=self.work_area())
+        else:
+            self.bubble.hide()
         self.draw()
 
     def call_later(self, delay_ms: int, fn: Callable[[], None]) -> None:
@@ -318,8 +440,6 @@ class PetWindow:
     def draw(self) -> None:
         """스프라이트가 있으면 그걸로, 없으면 벡터로."""
         if self._draw_sprite():
-            if self._bubble:
-                self._draw_bubble(self.canvas, self.size / BASE_SIZE)
             return
         self._draw_vector()
 
@@ -417,21 +537,21 @@ class PetWindow:
             c.create_text(zx, zy, text='z z', fill=PALETTE['ink_soft'],
                           font=font('caption', master=self.root))
 
-        if self._bubble:
-            self._draw_bubble(c, s)
 
-    def _draw_bubble(self, c: tk.Canvas, s: float) -> None:
-        """말풍선은 창 안에 갇힌다. 긴 발화는 별도 패널이 받는다(3단계)."""
-        text = self._bubble if len(self._bubble) <= 40 else self._bubble[:39] + '…'
-        pad = 8 * s
-        item = c.create_text(self.size / 2, 22 * s, text=text, width=self.size - 4 * pad,
-                             fill=PALETTE['ink'], font=font('bubble', master=self.root),
-                             justify='center')
-        x0, y0, x1, y1 = c.bbox(item)
-        c.create_rectangle(x0 - pad, y0 - pad, x1 + pad, y1 + pad,
-                           fill=PALETTE['paper'], outline=PALETTE['border'],
-                           width=max(1, 1.5 * s))
-        c.tag_raise(item)
+    def _report_callback_exception(self, exc_type, exc, tb) -> None:
+        """Tk 콜백 안에서 난 예외. stderr 와 데이터 폴더의 error.log 에 남긴다."""
+        text = ''.join(traceback.format_exception(exc_type, exc, tb))
+        print(text, file=sys.stderr, end='')
+        if self.data_dir is None:
+            return
+        try:
+            path = self.data_dir / 'error.log'
+            if path.is_file() and path.stat().st_size > ERROR_LOG_MAX_BYTES:
+                path.unlink()               # 무한히 자라지 않는다
+            with path.open('a', encoding='utf-8') as handle:
+                handle.write(f'--- {time.strftime("%Y-%m-%d %H:%M:%S")}\n{text}\n')
+        except OSError:
+            pass
 
     # ── 수명 ──────────────────────────────────────────
     def run(self) -> None:
@@ -510,7 +630,13 @@ class PetWindow:
         # 'Tcl_AsyncDelete' 로 프로세스가 죽는다. 폰트 캐시와 같은 부류다.
         if self.sprites is not None:
             self.sprites.invalidate()
-        self._call(self.on_quit)
+        self.bubble.destroy()
+        try:
+            self._call(self.on_quit)
+        except Exception:
+            # 종료 콜백이 터져도 창은 부순다. 안 그러면 _closed=True 인 채
+            # 창만 남아 두 번째 '종료' 도 무시된다 — 강제 종료밖에 길이 없다.
+            traceback.print_exc()
         try:
             self.root.destroy()
         except tk.TclError:

@@ -68,16 +68,74 @@ class Window(unittest.TestCase):
                 self.w.root.update()
 
     def test_말풍선(self):
+        # 말풍선은 달팽이 창 밖의 별도 창이다. 창 안에 그리면 두 줄만 넘어도 잘렸다.
         self.w.say('숲으로 간 이유를 오래 생각했다')
         self.w.root.update()
-        n = len(self.w.canvas.find_all())
+        self.assertEqual(self.w.bubble.text, '숲으로 간 이유를 오래 생각했다')
+        self.assertEqual(self.w.bubble.top.state(), 'normal')
         self.w.say(None)
         self.w.root.update()
-        self.assertLess(len(self.w.canvas.find_all()), n)
+        self.assertIsNone(self.w.bubble.text)
+        self.assertEqual(self.w.bubble.top.state(), 'withdrawn')
 
     def test_긴_발화는_잘린다(self):
         self.w.say('가' * 300)
-        self.w.root.update()          # 창 밖으로 새지 않고 그려지기만 하면 된다
+        self.w.root.update()
+        self.assertTrue(self.w.bubble.text.endswith('…'))
+        self.assertLessEqual(len(self.w.bubble.text), 120)
+
+    def test_말풍선이_화면_위로_잘리지_않는다(self):
+        # 달팽이가 화면 맨 위에 있으면 말풍선은 아래로 내려온다. 첫 줄이 안 보이면
+        # '기록을 다시 보여준다'는 이 앱의 전부가 잘리는 것이다.
+        from dataclasses import replace
+        area = self.w.work_area()
+        self.w.motion = replace(self.w.motion, x=area.left + 10, y=area.top)
+        self.w._place()
+        self.w.say('숲으로 간 이유를 오래 생각했다. ' * 4)
+        self.w.root.update()
+        top = self.w.bubble.top
+        self.assertGreaterEqual(top.winfo_y(), area.top)
+        self.assertGreaterEqual(top.winfo_x(), area.left)
+        self.assertGreater(top.winfo_reqheight(), 40)      # 여러 줄이 다 보인다
+
+    def test_배율을_줄여도_말풍선_글자는_그대로다(self):
+        from readingsnail.pet.window import PetWindow
+        small = PetWindow(start_at=(30, 30), scale=0.5)
+        try:
+            small.say('가' * 120)
+            small.root.update()
+            self.assertEqual(len(small.bubble.text), 120)
+            self.assertGreater(small.bubble.top.winfo_reqwidth(), small.size)
+        finally:
+            small.close()
+
+    def test_클릭만으로는_떨어지지_않는다(self):
+        # 더블클릭으로 기록 창을 열 때마다 달팽이가 바닥까지 떨어졌다.
+        from types import SimpleNamespace
+        from dataclasses import replace
+        area = self.w.work_area()
+        self.w.motion = replace(self.w.motion, x=200, y=area.top + 40, state='idle',
+                                hold_ticks=5)
+        self.w._place()
+        self.w.root.update_idletasks()
+        press = SimpleNamespace(x_root=210, y_root=area.top + 50)
+        self.w._drag_start(press)
+        self.w._drag_end(press)
+        self.assertNotEqual(self.w.motion.state, 'drop')
+        self.assertFalse(self.w._dragging)
+
+    def test_끌면_놓을_때_떨어진다(self):
+        from types import SimpleNamespace
+        from dataclasses import replace
+        area = self.w.work_area()
+        self.w.motion = replace(self.w.motion, x=200, y=area.top + 40, state='idle')
+        self.w._place()
+        self.w.root.update_idletasks()
+        self.w._drag_start(SimpleNamespace(x_root=210, y_root=area.top + 50))
+        self.w._drag_move(SimpleNamespace(x_root=260, y_root=area.top + 60))
+        self.assertTrue(self.w._dragging)
+        self.w._drag_end(SimpleNamespace(x_root=260, y_root=area.top + 60))
+        self.assertEqual(self.w.motion.state, 'drop')
 
     def test_배율을_줄여도_그려진다(self):
         from readingsnail.pet.window import PetWindow
@@ -96,6 +154,43 @@ class Window(unittest.TestCase):
 
 
 @unittest.skipUnless(GUI, REASON)
+class Failures(unittest.TestCase):
+    """터져도 창은 닫히고, 터진 자국은 남는다."""
+
+    def test_종료_콜백이_터져도_창은_부서진다(self):
+        from readingsnail.pet.window import PetWindow
+
+        def boom() -> None:
+            raise RuntimeError('on_quit 이 터졌다')
+
+        pet = PetWindow(start_at=(50, 50), on_quit=boom)
+        pet.close()                                   # 예외가 새면 안 된다
+        with self.assertRaises(tk.TclError):
+            pet.root.winfo_exists()                   # 진짜로 부서졌다
+
+    def test_콜백_예외가_error_log_에_남는다(self):
+        from tempfile import TemporaryDirectory
+        from readingsnail.pet.window import PetWindow
+        with TemporaryDirectory() as tmp:
+            pet = PetWindow(start_at=(50, 50), data_dir=tmp)
+            try:
+                import io
+                import contextlib
+                quiet = io.StringIO()
+                with contextlib.redirect_stderr(quiet):
+                    try:
+                        raise ValueError('콜백 안에서 났다')
+                    except ValueError:
+                        import sys as _sys
+                        pet.root.report_callback_exception(*_sys.exc_info())
+                log = (Path(tmp) / 'error.log').read_text(encoding='utf-8')
+                self.assertIn('콜백 안에서 났다', log)
+                self.assertIn('콜백 안에서 났다', quiet.getvalue())
+            finally:
+                pet.close()
+
+
+@unittest.skipUnless(GUI, REASON)
 class NoInheritanceChain(unittest.TestCase):
     """전작의 v2~v11 상속 체인을 다시 만들지 않는다."""
 
@@ -103,7 +198,10 @@ class NoInheritanceChain(unittest.TestCase):
         from readingsnail.pet import window
         classes = [n for n, v in vars(window).items()
                    if isinstance(v, type) and v.__module__ == window.__name__]
-        self.assertEqual(classes, ['PetWindow'])
+        # 말풍선(SpeechBubble)은 PetWindow 를 상속하지 않는 도우미다. 창 클래스는 하나다.
+        self.assertEqual([c for c in classes if c.endswith('Window')], ['PetWindow'])
+        for name in classes:
+            self.assertNotIn(window.PetWindow, getattr(window, name).__mro__[1:], name)
 
     def test_상속하지_않는다(self):
         from readingsnail.pet.window import PetWindow
@@ -222,10 +320,8 @@ class FontCacheAcrossRoots(unittest.TestCase):
             second.say('두 번째 창')
             second.root.update()
             wanted = theme.font('bubble', master=second.root)
-            texts = [i for i in second.canvas.find_all()
-                     if second.canvas.type(i) == 'text']
-            self.assertTrue(texts)
-            self.assertEqual(second.canvas.itemcget(texts[0], 'font'), str(wanted))
+            self.assertEqual(second.bubble.text, '두 번째 창')
+            self.assertEqual(str(second.bubble.label.cget('font')), str(wanted))
         finally:
             second.close()
 
@@ -761,7 +857,8 @@ class SpriteRendering(unittest.TestCase):
         self.pet.root.update()
         kinds = {self.pet.canvas.type(i) for i in self.pet.canvas.find_all()}
         self.assertIn('image', kinds)
-        self.assertIn('text', kinds)
+        self.assertEqual(self.pet.bubble.text, '숲으로 간 이유')
+        self.assertEqual(self.pet.bubble.top.state(), 'normal')
 
     def test_창마다_캐시가_따로_묶인다(self):
         """ImageTk 이미지는 만든 root 에 묶인다. 다른 창에 쓰면

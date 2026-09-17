@@ -19,6 +19,7 @@ import re
 import socket
 from dataclasses import dataclass
 from typing import Protocol
+from http.client import HTTPException
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
@@ -123,6 +124,15 @@ class _NoDowngradeRedirect(HTTPRedirectHandler):
         if req.full_url.lower().startswith('https://') and \
                 not newurl.lower().startswith('https://'):
             raise CatalogError('https 에서 http 로의 리다이렉트는 따르지 않는다')
+        # **목적지도 검사한다.** 첫 요청의 호스트만 보면 302 한 번으로
+        # 내부망(169.254.169.254 같은 곳)을 대신 두드리게 된다.
+        target = urlparse(newurl)
+        if target.scheme not in ('http', 'https') or not target.netloc:
+            raise CatalogError('리다이렉트 목적지가 올바르지 않다')
+        if target.username or target.password:
+            raise CatalogError('리다이렉트 목적지에 자격증명이 들어 있다')
+        if is_private_host(target.hostname or ''):
+            raise CatalogError('리다이렉트 목적지가 내부망을 가리킨다')
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
@@ -168,6 +178,22 @@ def is_private_host(host: str) -> bool:
     return False
 
 
+def _charset_of(response) -> str:
+    """응답이 밝힌 문자 집합. 없으면 utf-8. 서버가 euc-kr 로 주면 utf-8 고정은
+    제목을 전부 '����' 로 만든다."""
+    try:
+        name = response.headers.get_content_charset()
+    except Exception:
+        name = None
+    if not name:
+        return 'utf-8'
+    try:
+        b''.decode(name)
+    except LookupError:
+        return 'utf-8'
+    return name
+
+
 def fetch_json(url: str, *, opener=None) -> dict:
     """JSON 을 받아온다. 응답 크기를 자른다 — 서버가 무엇을 보낼지 모른다."""
     request = Request(url, headers={'User-Agent': USER_AGENT,
@@ -176,16 +202,19 @@ def fetch_json(url: str, *, opener=None) -> dict:
         open_url = opener or safe_opener()
         with open_url(request, timeout=TIMEOUT_SEC) as response:
             raw = response.read(MAX_RESPONSE_BYTES + 1)
+            charset = _charset_of(response)
     except HTTPError as exc:
         raise CatalogError(f'서지 서버가 {exc.code} 를 돌려줬다') from exc
-    except (URLError, OSError, TimeoutError) as exc:
+    except (URLError, OSError, TimeoutError, ValueError, HTTPException) as exc:
+        # ValueError·InvalidURL: 이상한 주소. 서버 문제와 같은 급으로 다룬다 —
+        # 어느 쪽이든 수동 입력으로 물러나면 된다.
         raise CatalogError(f'서지 서버에 닿지 못했다: {redact(exc)}') from exc
 
     if len(raw) > MAX_RESPONSE_BYTES:
         raise CatalogError('응답이 너무 크다')
     try:
-        data = json.loads(raw.decode('utf-8', errors='replace'))
-    except json.JSONDecodeError as exc:
+        data = json.loads(raw.decode(charset, errors='replace'))
+    except (json.JSONDecodeError, RecursionError, LookupError) as exc:
         raise CatalogError('서지 서버 응답이 JSON 이 아니다') from exc
     if not isinstance(data, dict):
         raise CatalogError('서지 서버 응답 모양이 예상과 다르다')

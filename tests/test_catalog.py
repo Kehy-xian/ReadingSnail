@@ -481,3 +481,136 @@ class NetworkHardening(unittest.TestCase):
             path = download_cover('https://images.example.org/c.png', Path(tmp),
                                   opener=responder(PNG))
             self.assertTrue(path.is_file())
+
+
+class RedirectTargets(unittest.TestCase):
+    """리다이렉트 목적지도 검사한다. 302 한 번이면 첫 검사를 우회한다."""
+
+    def _follow(self, newurl: str):
+        from urllib.request import Request
+        handler = base._NoDowngradeRedirect()
+        return handler.redirect_request(Request('https://images.example.org/c.png'),
+                                        None, 302, 'Found', {}, newurl)
+
+    def test_내부망으로_가는_리다이렉트는_따르지_않는다(self):
+        for bad in ('https://169.254.169.254/latest/meta-data/',
+                    'https://127.0.0.1/c.png', 'https://10.0.0.5/c.png',
+                    'https://localhost/c.png'):
+            with self.subTest(url=bad):
+                with self.assertRaises(base.CatalogError):
+                    self._follow(bad)
+
+    def test_자격증명이_든_목적지는_따르지_않는다(self):
+        with self.assertRaises(base.CatalogError):
+            self._follow('https://user:pw@images.example.org/c.png')
+
+    def test_이상한_스킴은_따르지_않는다(self):
+        with self.assertRaises(base.CatalogError):
+            self._follow('file:///etc/passwd')
+
+    def test_공개_주소는_따라간다(self):
+        self.assertIsNotNone(self._follow('https://cdn.example.org/c.png'))
+
+
+class HeaderResponse(FakeResponse):
+    """헤더가 있는 가짜 응답."""
+
+    def __init__(self, data: bytes, **headers):
+        super().__init__(data)
+        from email.message import Message
+        self.headers = Message()
+        for key, value in headers.items():
+            self.headers[key.replace('_', '-')] = value
+
+
+class HardenedCovers(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    @staticmethod
+    def _bomb() -> bytes:
+        """4KB 도 안 되는데 펼치면 3천만 화소(RGB 90MB). 진짜 PNG 다."""
+        from PIL import Image
+        buffer = io.BytesIO()
+        Image.new('1', (6000, 5000)).save(buffer, format='PNG')
+        return buffer.getvalue()
+
+    def test_화소_폭탄은_받지_않는다(self):
+        bomb = self._bomb()
+        self.assertLess(len(bomb), 64 * 1024)
+        with self.assertRaises(CoverError) as caught:
+            download_cover('https://images.example.org/bomb.png', self.tmp,
+                           opener=responder(bomb))
+        self.assertIn('화소', str(caught.exception))
+        self.assertFalse(list((self.tmp / 'covers').glob('*')) if (self.tmp / 'covers').is_dir() else [])
+
+    def test_들여온_폭탄_표지는_색을_뽑지_않고_None(self):
+        from readingsnail.services.covers import dominant_color
+        path = self.tmp / 'bomb.png'
+        path.write_bytes(self._bomb())
+        self.assertIsNone(dominant_color(path))
+
+    def test_한글_공백이_든_주소도_받는다(self):
+        seen: list[str] = []
+
+        def capture(request, timeout=None):
+            seen.append(request.full_url)
+            return FakeResponse(PNG)
+
+        path = download_cover('https://images.example.org/표지 1.png?q=책', self.tmp,
+                              opener=capture)
+        self.assertTrue(path.is_file())
+        self.assertEqual(len(seen), 1)
+        self.assertTrue(seen[0].isascii(), seen[0])
+        self.assertIn('%ED%91%9C', seen[0])           # '표'
+
+    def test_이상한_주소는_CoverError_로_끝난다(self):
+        # UnicodeEncodeError/InvalidURL 이 배경 스레드를 뚫고 죽이면 안 된다.
+        for bad in ('https://images.example.org/c.png\n', 'https://images.exam ple.org/c.png',
+                    'https://xn--/c.png'):
+            with self.subTest(url=bad):
+                try:
+                    download_cover(bad, self.tmp, opener=responder(PNG))
+                except CoverError:
+                    pass
+
+    def test_끊긴_표지는_저장하지_않는다(self):
+        # 완성본으로 저장하면 해시 캐시 때문에 다시는 안 받는다.
+        with self.assertRaises(CoverError) as caught:
+            download_cover('https://images.example.org/cut.png', self.tmp,
+                           opener=lambda r, timeout=None: HeaderResponse(
+                               PNG, Content_Length=str(len(PNG) * 10)))
+        self.assertIn('끊겼다', str(caught.exception))
+
+
+class SourceRobustness(unittest.TestCase):
+    def test_잘못된_프록시_설정이_앱_시작을_막지_않는다(self):
+        from readingsnail.services.catalog import SETTING_PROXY, build_source
+
+        class Settings(dict):
+            def get(self, key, default=None):
+                return dict.get(self, key, default)
+
+        self.assertIsNone(build_source(Settings({SETTING_PROXY: 'https://[::1'})))
+
+    def test_어댑터가_놓친_예외도_빈_목록으로(self):
+        from readingsnail.services.catalog import search_books
+
+        class Exploding:
+            name = 'boom'
+            available = True
+
+            def search(self, query, *, limit=10):
+                raise RecursionError('maximum recursion depth exceeded')
+
+        self.assertEqual(search_books(Exploding(), '월든'), [])
+
+    def test_서버가_밝힌_문자_집합으로_읽는다(self):
+        body = json.dumps({'docs': [{'TITLE': '월든'}]}, ensure_ascii=False).encode('euc-kr')
+        data = base.fetch_json('https://example.org/x', opener=lambda r, timeout=None:
+                               HeaderResponse(body, Content_Type='application/json; charset=euc-kr'))
+        self.assertEqual(data['docs'][0]['TITLE'], '월든')

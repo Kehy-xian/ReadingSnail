@@ -17,12 +17,16 @@ import hashlib
 import uuid
 from pathlib import Path
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlparse
+from http.client import HTTPException
+from urllib.parse import quote, urlparse, urlunparse
 from urllib.request import Request
 
 from .catalog.base import TIMEOUT_SEC, USER_AGENT, is_private_host, safe_opener
 
 MAX_COVER_BYTES = 4 * 1024 * 1024
+# 펼쳤을 때 화소 상한. 4MB PNG 가 1.7GB 로 펼쳐지는 '폭탄'을 막는다 — Pillow 의
+# 기본 문턱(1.78억 화소)은 그보다 훨씬 위에 있다. 표지는 커 봐야 수백만 화소다.
+MAX_COVER_PIXELS = 25_000_000
 
 # 확장자는 실제 내용으로 정한다. Content-Type 을 그대로 믿지 않는다.
 _MAGIC = (
@@ -36,6 +40,17 @@ _MAGIC = (
 
 class CoverError(RuntimeError):
     """표지를 가져오지 못했다. 책 등록은 계속된다."""
+
+
+def _declared_length(response) -> int | None:
+    try:
+        value = response.headers.get('Content-Length')
+    except Exception:
+        return None
+    try:
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
 
 
 def _extension(data: bytes) -> str:
@@ -63,6 +78,37 @@ def _existing_cover(folder: Path, stem: str) -> Path | None:
         if candidate.is_file():
             return candidate
     return None
+
+
+def _ascii_url(address: str) -> str:
+    """한글·공백이 든 주소를 urllib 이 받는 모양으로. 이미 %-인코딩된 부분은 둔다.
+
+    안 하면 Request 가 UnicodeEncodeError/InvalidURL 을 내는데, 그건 OSError 가
+    아니라 attach_cover 를 뚫고 배경 스레드를 죽인다 — 그 표지는 영영 안 받아진다.
+    """
+    parsed = urlparse(address)
+    try:
+        host = parsed.hostname.encode('idna').decode('ascii') if parsed.hostname else ''
+    except UnicodeError:
+        raise CoverError('표지 주소의 호스트 이름이 올바르지 않다')
+    netloc = host + (f':{parsed.port}' if parsed.port else '')
+    return urlunparse((
+        parsed.scheme, netloc,
+        quote(parsed.path, safe='/%:@!$&\'()*+,;='),
+        quote(parsed.params, safe='%:@!$&\'()*+,;='),
+        quote(parsed.query, safe='%=&:@!$\'()*+,;/?'),
+        '',
+    ))
+
+
+def _pixel_count(data: bytes) -> int:
+    """디코딩하지 않고 헤더만 읽어 화소 수를 잰다."""
+    import io
+
+    from PIL import Image
+    with Image.open(io.BytesIO(data)) as image:
+        width, height = image.size
+    return int(width) * int(height)
 
 
 def covers_dir(data_dir: str | Path) -> Path:
@@ -93,23 +139,37 @@ def download_cover(url: str, data_dir: str | Path, *, opener=None) -> Path:
     if existing is not None:
         return existing                     # 이미 받아 뒀다
 
-    request = Request(address, headers={'User-Agent': USER_AGENT,
-                                        'Accept': 'image/*'})
+    request = Request(_ascii_url(address), headers={'User-Agent': USER_AGENT,
+                                                    'Accept': 'image/*'})
     try:
         open_url = opener or safe_opener()
         with open_url(request, timeout=TIMEOUT_SEC) as response:
             data = response.read(MAX_COVER_BYTES + 1)
+            expected = _declared_length(response)
     except HTTPError as exc:
         raise CoverError(f'표지 서버가 {exc.code} 를 돌려줬다') from exc
-    except (URLError, OSError, TimeoutError) as exc:
+    except (URLError, OSError, TimeoutError, ValueError, HTTPException) as exc:
         raise CoverError(f'표지를 받지 못했다: {exc}') from exc
 
     if not data:
         raise CoverError('표지가 비어 있다')
     if len(data) > MAX_COVER_BYTES:
         raise CoverError('표지가 너무 크다')
+    if expected is not None and len(data) < expected:
+        # 끊긴 표지를 완성본으로 저장하면 해시 캐시 때문에 다시는 안 받는다.
+        raise CoverError(f'표지가 도중에 끊겼다 ({len(data)}/{expected} 바이트)')
 
-    target = folder / f'{stem}{_extension(data)}'
+    extension = _extension(data)
+    try:
+        pixels = _pixel_count(data)
+    except Exception:
+        # 헤더를 못 읽는 그림은 펼쳐지지도 않는다 — 폭탄일 수 없다. 확장자 판정은
+        # 이미 매직 바이트로 끝났으므로 그대로 둔다.
+        pixels = 0
+    if pixels > MAX_COVER_PIXELS:
+        raise CoverError(f'표지 화소가 너무 많다 ({pixels:,})')
+
+    target = folder / f'{stem}{extension}'
     # 받다 만 파일이 남지 않게 임시 이름으로 쓰고 옮긴다.
     # 임시 이름에 고유값을 넣는다. 같은 표지를 여러 스레드가 동시에 받으면
     # (책을 연달아 등록할 때 실제로 일어난다) 같은 .part 를 서로 지워
@@ -150,6 +210,11 @@ def dominant_color(path: str | Path) -> str | None:
 
     try:
         with Image.open(path) as source:
+            width, height = source.size
+            if width * height > MAX_COVER_PIXELS:
+                # 사용자가 art_overrides 나 백업으로 들여온 표지일 수도 있다.
+                # 펼치기 전에 크기부터 본다 — convert 가 메모리를 먹는 순간이다.
+                return None
             image = source.convert('RGB')
             # 가장자리는 흰 여백인 경우가 많다. 가운데만 본다.
             w, h = image.size

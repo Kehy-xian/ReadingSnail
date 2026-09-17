@@ -22,13 +22,18 @@ SETTING_PROXY = 'catalog.proxy_endpoint'
 
 def build_source(settings, *, opener=None) -> BookSource | None:
     """설정을 보고 쓸 수 있는 출처 하나를 고른다. 없으면 None."""
-    proxy = ProxySource(settings.get(SETTING_PROXY, '') or '', opener=opener)
-    if proxy.available:
-        return proxy
-    direct = NationalLibrarySource(settings.get(SETTING_CERT_KEY, '') or '',
-                                   opener=opener)
-    if direct.available:
-        return direct
+    try:
+        proxy = ProxySource(settings.get(SETTING_PROXY, '') or '', opener=opener)
+        if proxy.available:
+            return proxy
+        direct = NationalLibrarySource(settings.get(SETTING_CERT_KEY, '') or '',
+                                       opener=opener)
+        if direct.available:
+            return direct
+    except Exception:
+        # 설정 한 줄(잘못된 IPv6 괄호 같은 것)이 앱 시작을 막으면 안 된다.
+        # 출처가 없으면 수동 입력으로 간다 — 그것이 언제나 되는 길이다.
+        return None
     return None
 
 
@@ -43,6 +48,10 @@ def search_books(source: BookSource | None, query: str, *,
     try:
         return source.search(query, limit=limit)
     except CatalogError:
+        return []
+    except Exception:
+        # 어댑터가 놓친 예외(깊은 JSON 의 RecursionError, 이상한 주소의 InvalidURL…).
+        # 배경 스레드에서 새면 창은 '찾는 중…' 인 채 영원히 멈춘다.
         return []
 
 
